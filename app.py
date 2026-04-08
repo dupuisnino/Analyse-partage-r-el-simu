@@ -21,14 +21,59 @@ fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=[
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
-st.sidebar.header("📅 2. Paramètres")
+# ==========================================
+# NOUVEAU : VERIFICATION DES COLONNES SIBELGA
+# ==========================================
+col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel = None, None, None, None, None
+
+if fichier_factures:
+    st.sidebar.header("🔧 2. Vérification des colonnes")
+    st.sidebar.markdown("*L'outil a pré-sélectionné les colonnes Sibelga. Corrigez-les si nécessaire.*")
+    
+    # On lit juste les titres des colonnes pour être ultra rapide
+    fichier_factures.seek(0)
+    df_cols = pd.read_excel(fichier_factures, nrows=0)
+    fichier_factures.seek(0)
+    colonnes_sibelga = df_cols.columns.tolist()
+    options_colonnes = ["--- À sélectionner ---"] + colonnes_sibelga
+    
+    def trouver_colonne_index(options_mots_cles, mots_exclus):
+        for mots_cles in options_mots_cles:
+            for c in colonnes_sibelga:
+                c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
+                if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
+                    return options_colonnes.index(c)
+        return 0 # Retourne "--- À sélectionner ---" si rien n'est trouvé
+
+    # Intelligence artificielle (avec 'reseau' ajouté pour l'injection !)
+    idx_ean = trouver_colonne_index([['ean']], [])
+    idx_vol_part = trouver_colonne_index([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
+    idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume']], ['injection', 'production', 'taux', 'statut'])
+    idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
+    idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation'])
+
+    # Affichage des menus déroulants pour laisser l'utilisateur contrôler
+    col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
+    col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
+    col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Compl.", options_colonnes, index=idx_vol_comp)
+    col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
+    col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
+
+st.sidebar.header("📅 3. Paramètres")
 mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=1, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
+
 
 # ==========================================
 # MOTEUR D'ANALYSE
 # ==========================================
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.sidebar.button("🚀 Lancer l'Analyse", type="primary"):
+        
+        # Sécurité : On bloque si une colonne n'a pas été sélectionnée !
+        if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
+            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
+            st.stop()
+            
         with st.spinner("Calculs en cours..."):
             try:
                 # ---------------------------------------------------------
@@ -43,52 +88,27 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
                 # ---------------------------------------------------------
-                # ETAPE 2 : FACTURES SIBELGA (DÉTECTION INTELLIGENTE V2)
+                # ETAPE 2 : FACTURES SIBELGA
                 # ---------------------------------------------------------
                 df_reels = pd.read_excel(fichier_factures)
-                colonnes_sibelga = df_reels.columns.tolist()
                 
-                # Moteur V2 : On teste les listes de mots par ordre de priorité (ex: d'abord ["partage", "kwh"], puis ["partage", "volume"])
-                def trouver_colonne(options_mots_cles, mots_exclus):
-                    for mots_cles in options_mots_cles:
-                        for c in colonnes_sibelga:
-                            c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
-                            # Si tous les mots de la liste actuelle sont dans le titre de la colonne
-                            if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
-                                return c
-                    return None
-
-                col_ean = trouver_colonne([['ean']], [])
-                col_vol_part = trouver_colonne([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
-                col_vol_comp = trouver_colonne([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume']], ['injection', 'production', 'taux', 'statut'])
-                col_inj_part = trouver_colonne([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
-                col_inj_comp = trouver_colonne([['residuel', 'injection'], ['complementaire', 'injection']], ['taux', 'statut'])
-                
-                # Sécurité : Si l'appli ne trouve pas une des colonnes, elle s'arrête et t'affiche le problème
-                if not all([col_ean, col_vol_part, col_vol_comp, col_inj_part, col_inj_comp]):
-                    st.error(f"❌ Impossible d'identifier automatiquement TOUTES les colonnes Sibelga.")
-                    st.info(f"**Ce que l'outil a trouvé :**\n- EAN: `{col_ean}`\n- Vol Partagé: `{col_vol_part}`\n- Vol Complémentaire: `{col_vol_comp}`\n- Inj Partagée: `{col_inj_part}`\n- Inj Résiduelle: `{col_inj_comp}`")
-                    st.warning(f"**Toutes les colonnes de votre fichier :** {colonnes_sibelga}")
-                    st.stop()
-
-                df_reels[col_ean] = df_reels[col_ean].astype(str).str.strip()
-                colonnes_vol = [col_vol_part, col_vol_comp, col_inj_part, col_inj_comp]
+                df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.strip()
+                colonnes_vol = [col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]
                 
                 for col in colonnes_vol:
-                    # Remplacement magique des virgules européennes par des points
                     if df_reels[col].dtype == object:
                         df_reels[col] = df_reels[col].astype(str).str.replace(',', '.')
                     df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                     
-                df_reels_agg = df_reels.groupby(col_ean)[colonnes_vol].sum().reset_index()
+                df_reels_agg = df_reels.groupby(col_ean_sel)[colonnes_vol].sum().reset_index()
                 
-                # On renomme proprement en arrière-plan pour que le reste du code marche
+                # Renommage standard pour le reste du code
                 df_reels_agg = df_reels_agg.rename(columns={
-                    col_ean: 'EAN',
-                    col_vol_part: 'Volume Partagé (kWh)',
-                    col_vol_comp: 'Volume Complémentaire (kWh)',
-                    col_inj_part: 'Injection Partagée (kWh)',
-                    col_inj_comp: 'Injection Résiduelle (kWh)'
+                    col_ean_sel: 'EAN',
+                    col_vol_part_sel: 'Volume Partagé (kWh)',
+                    col_vol_comp_sel: 'Volume Complémentaire (kWh)',
+                    col_inj_part_sel: 'Injection Partagée (kWh)',
+                    col_inj_comp_sel: 'Injection Résiduelle (kWh)'
                 })
                 
                 df_reels_complet = pd.merge(df_reels_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
