@@ -22,7 +22,7 @@ fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 # ==========================================
-# NOUVEAU : VERIFICATION DES COLONNES SIBELGA
+# VERIFICATION DES COLONNES SIBELGA
 # ==========================================
 col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel = None, None, None, None, None
 
@@ -30,7 +30,6 @@ if fichier_factures:
     st.sidebar.header("🔧 2. Vérification des colonnes")
     st.sidebar.markdown("*L'outil a pré-sélectionné les colonnes Sibelga. Corrigez-les si nécessaire.*")
     
-    # On lit juste les titres des colonnes pour être ultra rapide
     fichier_factures.seek(0)
     df_cols = pd.read_excel(fichier_factures, nrows=0)
     fichier_factures.seek(0)
@@ -43,25 +42,23 @@ if fichier_factures:
                 c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
                 if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
                     return options_colonnes.index(c)
-        return 0 # Retourne "--- À sélectionner ---" si rien n'est trouvé
+        return 0
 
-    # Intelligence artificielle (avec 'reseau' ajouté pour l'injection !)
+    # NOUVEAU : Ajout de "reseau", "consomm" pour la détection de la conso complémentaire !
     idx_ean = trouver_colonne_index([['ean']], [])
     idx_vol_part = trouver_colonne_index([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
-    idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume']], ['injection', 'production', 'taux', 'statut'])
+    idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm'], ['reseau', 'kwh']], ['injection', 'production', 'taux', 'statut', 'partage'])
     idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
-    idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation'])
+    idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
 
-    # Affichage des menus déroulants pour laisser l'utilisateur contrôler
     col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
     col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
-    col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Compl.", options_colonnes, index=idx_vol_comp)
+    col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Réseau", options_colonnes, index=idx_vol_comp)
     col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
     col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
 
 st.sidebar.header("📅 3. Paramètres")
 mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=1, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
-
 
 # ==========================================
 # MOTEUR D'ANALYSE
@@ -69,7 +66,6 @@ mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=1, for
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.sidebar.button("🚀 Lancer l'Analyse", type="primary"):
         
-        # Sécurité : On bloque si une colonne n'a pas été sélectionnée !
         if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
             st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
             st.stop()
@@ -79,30 +75,34 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # ---------------------------------------------------------
                 # ETAPE 1 : CONTACTS
                 # ---------------------------------------------------------
-                df_contacts = pd.read_excel(fichier_contacts)
+                # dtype=str empêche les EAN de devenir des 5.414e+17
+                df_contacts = pd.read_excel(fichier_contacts, dtype=str)
                 est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
                 df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
                 df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
                 df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
-                df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.strip()
+                
+                # Nettoyage des '.0' si l'export Excel a été capricieux
+                df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
                 # ---------------------------------------------------------
                 # ETAPE 2 : FACTURES SIBELGA
                 # ---------------------------------------------------------
-                df_reels = pd.read_excel(fichier_factures)
+                # dtype=str ici aussi pour sauver les EAN !
+                df_reels = pd.read_excel(fichier_factures, dtype=str)
                 
-                df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.strip()
+                df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 colonnes_vol = [col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]
                 
                 for col in colonnes_vol:
                     if df_reels[col].dtype == object:
                         df_reels[col] = df_reels[col].astype(str).str.replace(',', '.')
+                    # On reconvertit enfin les volumes en vrais nombres pour les calculs
                     df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                     
                 df_reels_agg = df_reels.groupby(col_ean_sel)[colonnes_vol].sum().reset_index()
                 
-                # Renommage standard pour le reste du code
                 df_reels_agg = df_reels_agg.rename(columns={
                     col_ean_sel: 'EAN',
                     col_vol_part_sel: 'Volume Partagé (kWh)',
@@ -153,17 +153,17 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
 
                 st.subheader("🚨 Alertes d'Audit")
                 eans_inconnus = df_reels_complet[df_reels_complet['Proprietaire'] == 'Inconnu']['EAN'].unique()
-                if len(eans_inconnus) > 0: st.error(f"**ALERTE ODOO (EAN facturés mais inconnus):** {', '.join(eans_inconnus)}")
+                if len(eans_inconnus) > 0: st.error(f"**ALERTE ODOO (EAN facturés mais inconnus dans contacts) :** {', '.join(eans_inconnus)}")
                 
                 participants_propres = set(p.strip() for p in participants_simu)
                 mots_techniques = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
                 simu_sans_mapping = (participants_propres - set(mapping_dict.keys())) - mots_techniques
-                if len(simu_sans_mapping) > 0: st.warning(f"**ALERTE MAPPING (Membres Streamlit non traduits):** {', '.join(simu_sans_mapping)}")
+                if len(simu_sans_mapping) > 0: st.warning(f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_mapping)}")
 
                 reel_sans_simu = df_comparatif[df_comparatif['_merge'] == 'left_only']['Proprietaire'].tolist()
                 simu_sans_reel = df_comparatif[df_comparatif['_merge'] == 'right_only']['Proprietaire'].tolist()
-                if reel_sans_simu: st.warning(f"**Facturés mais NON simulés:** {', '.join(reel_sans_simu)}")
-                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci:** {', '.join(simu_sans_reel)}")
+                if reel_sans_simu: st.warning(f"**Facturés mais NON simulés :** {', '.join(reel_sans_simu)}")
+                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci :** {', '.join(simu_sans_reel)}")
                 
                 if len(eans_inconnus) == 0 and len(simu_sans_mapping) == 0 and not reel_sans_simu and not simu_sans_reel:
                     st.success("✅ Aucun problème détecté. Les bases de données sont parfaitement alignées !")
