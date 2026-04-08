@@ -44,7 +44,6 @@ if fichier_factures:
                     return options_colonnes.index(c)
         return 0
 
-    # NOUVEAU : Ajout de "reseau", "consomm" pour la détection de la conso complémentaire !
     idx_ean = trouver_colonne_index([['ean']], [])
     idx_vol_part = trouver_colonne_index([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
     idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm'], ['reseau', 'kwh']], ['injection', 'production', 'taux', 'statut', 'partage'])
@@ -75,30 +74,24 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # ---------------------------------------------------------
                 # ETAPE 1 : CONTACTS
                 # ---------------------------------------------------------
-                # dtype=str empêche les EAN de devenir des 5.414e+17
                 df_contacts = pd.read_excel(fichier_contacts, dtype=str)
                 est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
                 df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
                 df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
                 df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
-                
-                # Nettoyage des '.0' si l'export Excel a été capricieux
                 df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
                 # ---------------------------------------------------------
                 # ETAPE 2 : FACTURES SIBELGA
                 # ---------------------------------------------------------
-                # dtype=str ici aussi pour sauver les EAN !
                 df_reels = pd.read_excel(fichier_factures, dtype=str)
-                
                 df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 colonnes_vol = [col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]
                 
                 for col in colonnes_vol:
                     if df_reels[col].dtype == object:
                         df_reels[col] = df_reels[col].astype(str).str.replace(',', '.')
-                    # On reconvertit enfin les volumes en vrais nombres pour les calculs
                     df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                     
                 df_reels_agg = df_reels.groupby(col_ean_sel)[colonnes_vol].sum().reset_index()
@@ -163,7 +156,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 reel_sans_simu = df_comparatif[df_comparatif['_merge'] == 'left_only']['Proprietaire'].tolist()
                 simu_sans_reel = df_comparatif[df_comparatif['_merge'] == 'right_only']['Proprietaire'].tolist()
                 if reel_sans_simu: st.warning(f"**Facturés mais NON simulés :** {', '.join(reel_sans_simu)}")
-                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci :** {', '.join(simu_sans_reel)}")
+                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci :** {', '.join(simu_sans_reel)} *(Ils ne seront pas inclus dans les graphiques et totaux ci-dessous)*")
                 
                 if len(eans_inconnus) == 0 and len(simu_sans_mapping) == 0 and not reel_sans_simu and not simu_sans_reel:
                     st.success("✅ Aucun problème détecté. Les bases de données sont parfaitement alignées !")
@@ -171,6 +164,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = df_comparatif.drop(columns=['_merge']).fillna(0)
                 df_comparatif = df_comparatif[(df_comparatif['Reel_Conso_Totale_MWh'] > 0) | (df_comparatif['Sim_Conso_Totale_MWh'] > 0) | (df_comparatif['Reel_Prod_Totale_MWh'] > 0) | (df_comparatif['Sim_Prod_Totale_MWh'] > 0)]
                 
+                # Calculs d'erreurs pour tout le monde (utile pour le tableau final)
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -183,23 +177,28 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
 
                 df_comparatif = df_comparatif.round(3)
 
+                # =========================================================================
+                # NOUVEAU : CRÉATION DE df_analyse (Exclut ceux sans facture Sibelga)
+                # =========================================================================
+                df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_sans_reel)].copy()
+
                 # ---------------------------------------------------------
-                # ANALYSE GLOBALE DE LA COMMUNAUTÉ
+                # ANALYSE GLOBALE DE LA COMMUNAUTÉ (Sur df_analyse)
                 # ---------------------------------------------------------
                 st.divider()
                 st.subheader("🌍 Analyse Globale de la Communauté")
                 col_met1, col_met2, col_met3 = st.columns(3)
                 
-                tot_reel_conso = df_comparatif['Reel_Conso_Totale_MWh'].sum()
-                tot_sim_conso = df_comparatif['Sim_Conso_Totale_MWh'].sum()
+                tot_reel_conso = df_analyse['Reel_Conso_Totale_MWh'].sum()
+                tot_sim_conso = df_analyse['Sim_Conso_Totale_MWh'].sum()
                 pct_conso = ((tot_sim_conso - tot_reel_conso) / tot_reel_conso * 100) if tot_reel_conso > 0 else 0
                 
-                tot_reel_prod = df_comparatif['Reel_Prod_Totale_MWh'].sum()
-                tot_sim_prod = df_comparatif['Sim_Prod_Totale_MWh'].sum()
+                tot_reel_prod = df_analyse['Reel_Prod_Totale_MWh'].sum()
+                tot_sim_prod = df_analyse['Sim_Prod_Totale_MWh'].sum()
                 pct_prod = ((tot_sim_prod - tot_reel_prod) / tot_reel_prod * 100) if tot_reel_prod > 0 else 0
                 
-                tot_reel_ech = df_comparatif['Reel_Conso_Partagee_MWh'].sum()
-                tot_sim_ech = df_comparatif['Sim_Conso_Partagee_MWh'].sum()
+                tot_reel_ech = df_analyse['Reel_Conso_Partagee_MWh'].sum()
+                tot_sim_ech = df_analyse['Sim_Conso_Partagee_MWh'].sum()
                 pct_ech = ((tot_sim_ech - tot_reel_ech) / tot_reel_ech * 100) if tot_reel_ech > 0 else 0
                 
                 col_met1.metric("⚡ Total Consommé (MWh)", f"{tot_reel_conso:.2f}", f"{pct_conso:+.1f}% (Simu: {tot_sim_conso:.2f})", delta_color="off")
@@ -209,12 +208,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.divider()
 
                 # ---------------------------------------------------------
-                # GRAPHIQUE 1 : PIRE DIMENSIONNEMENT EN MWh
+                # GRAPHIQUE 1 : PIRE DIMENSIONNEMENT EN MWh (Sur df_analyse)
                 # ---------------------------------------------------------
                 st.subheader("📉 Pire dimensionnement (MWh)")
                 col1, col2 = st.columns(2)
                 
-                df_pire_conso = df_comparatif.sort_values(by='Abs_Erreur_Conso', ascending=False)
+                df_pire_conso = df_analyse.sort_values(by='Abs_Erreur_Conso', ascending=False)
                 top10_conso = df_pire_conso.head(10).copy()
                 fig_bar_conso, ax1 = plt.subplots(figsize=(8, 5))
                 couleurs_conso = ['#e74c3c' if val > 0 else '#3498db' for val in top10_conso['Erreur_Conso_MWh']]
@@ -225,7 +224,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 ax1.axvline(0, color='black', linewidth=1)
                 col1.pyplot(fig_bar_conso)
 
-                df_pire_prod = df_comparatif.sort_values(by='Abs_Erreur_Prod', ascending=False)
+                df_pire_prod = df_analyse.sort_values(by='Abs_Erreur_Prod', ascending=False)
                 top10_prod = df_pire_prod.head(10).copy()
                 top10_prod = top10_prod[top10_prod['Abs_Erreur_Prod'] > 0]
                 if not top10_prod.empty:
@@ -241,13 +240,13 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.divider()
 
                 # ---------------------------------------------------------
-                # GRAPHIQUE 2 : PIRE DIMENSIONNEMENT EN %
+                # GRAPHIQUE 2 : PIRE DIMENSIONNEMENT EN % (Sur df_analyse)
                 # ---------------------------------------------------------
                 st.subheader("📉 Pire dimensionnement (%)")
                 st.markdown("*Utile pour repérer les membres qui verront une énorme différence sur leur facture.*")
                 col3, col4 = st.columns(2)
                 
-                df_pire_conso_pct = df_comparatif.sort_values(by='Abs_Erreur_Conso_%', ascending=False)
+                df_pire_conso_pct = df_analyse.sort_values(by='Abs_Erreur_Conso_%', ascending=False)
                 top10_conso_pct = df_pire_conso_pct.head(10).copy()
                 top10_conso_pct = top10_conso_pct[top10_conso_pct['Abs_Erreur_Conso_%'] > 0]
                 if not top10_conso_pct.empty:
@@ -260,7 +259,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax3.axvline(0, color='black', linewidth=1)
                     col3.pyplot(fig_bar_conso_pct)
 
-                df_pire_prod_pct = df_comparatif.sort_values(by='Abs_Erreur_Prod_%', ascending=False)
+                df_pire_prod_pct = df_analyse.sort_values(by='Abs_Erreur_Prod_%', ascending=False)
                 top10_prod_pct = df_pire_prod_pct.head(10).copy()
                 top10_prod_pct = top10_prod_pct[top10_prod_pct['Abs_Erreur_Prod_%'] > 0]
                 if not top10_prod_pct.empty:
@@ -276,12 +275,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.divider()
 
                 # ---------------------------------------------------------
-                # GRAPHIQUE 3 : LES 4 NUAGES DE POINTS
+                # GRAPHIQUE 3 : LES 4 NUAGES DE POINTS (Sur df_analyse)
                 # ---------------------------------------------------------
                 st.subheader("📊 Vue globale : Réalité vs Simulation")
                 fig_nuage, axes = plt.subplots(2, 2, figsize=(16, 14))
                 
-                df_c_tot = df_comparatif[(df_comparatif['Reel_Conso_Totale_MWh'] > 0) | (df_comparatif['Sim_Conso_Totale_MWh'] > 0)]
+                df_c_tot = df_analyse[(df_analyse['Reel_Conso_Totale_MWh'] > 0) | (df_analyse['Sim_Conso_Totale_MWh'] > 0)]
                 axes[0, 0].scatter(df_c_tot['Reel_Conso_Totale_MWh'], df_c_tot['Sim_Conso_Totale_MWh'], color='#3498db', alpha=0.8, edgecolor='black', s=60)
                 max_c_tot = max(df_c_tot['Reel_Conso_Totale_MWh'].max(), df_c_tot['Sim_Conso_Totale_MWh'].max())
                 if pd.notna(max_c_tot) and max_c_tot > 0: axes[0, 0].plot([0, max_c_tot], [0, max_c_tot], 'r--', label='Idéal (Simu = Réalité)')
@@ -290,7 +289,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 for _, row in df_c_tot.sort_values(by='Abs_Erreur_Conso', ascending=False).head(5).iterrows():
                     axes[0, 0].annotate(row['Proprietaire'][:20], (row['Reel_Conso_Totale_MWh'], row['Sim_Conso_Totale_MWh']), fontsize=9, xytext=(5,5), textcoords='offset points')
 
-                df_p_tot = df_comparatif[(df_comparatif['Reel_Prod_Totale_MWh'] > 0) | (df_comparatif['Sim_Prod_Totale_MWh'] > 0)]
+                df_p_tot = df_analyse[(df_analyse['Reel_Prod_Totale_MWh'] > 0) | (df_analyse['Sim_Prod_Totale_MWh'] > 0)]
                 axes[0, 1].scatter(df_p_tot['Reel_Prod_Totale_MWh'], df_p_tot['Sim_Prod_Totale_MWh'], color='#2ecc71', alpha=0.8, edgecolor='black', s=60)
                 max_p_tot = max(df_p_tot['Reel_Prod_Totale_MWh'].max(), df_p_tot['Sim_Prod_Totale_MWh'].max())
                 if pd.notna(max_p_tot) and max_p_tot > 0: axes[0, 1].plot([0, max_p_tot], [0, max_p_tot], 'r--', label='Idéal')
@@ -299,7 +298,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 for _, row in df_p_tot.sort_values(by='Abs_Erreur_Prod', ascending=False).head(5).iterrows():
                     axes[0, 1].annotate(row['Proprietaire'][:20], (row['Reel_Prod_Totale_MWh'], row['Sim_Prod_Totale_MWh']), fontsize=9, xytext=(5,5), textcoords='offset points')
 
-                df_c_part = df_comparatif[(df_comparatif['Reel_Conso_Partagee_MWh'] > 0) | (df_comparatif['Sim_Conso_Partagee_MWh'] > 0)]
+                df_c_part = df_analyse[(df_analyse['Reel_Conso_Partagee_MWh'] > 0) | (df_analyse['Sim_Conso_Partagee_MWh'] > 0)]
                 axes[1, 0].scatter(df_c_part['Reel_Conso_Partagee_MWh'], df_c_part['Sim_Conso_Partagee_MWh'], color='#9b59b6', alpha=0.8, edgecolor='black', s=60)
                 max_c_part = max(df_c_part['Reel_Conso_Partagee_MWh'].max(), df_c_part['Sim_Conso_Partagee_MWh'].max())
                 if pd.notna(max_c_part) and max_c_part > 0: axes[1, 0].plot([0, max_c_part], [0, max_c_part], 'r--', label='Idéal')
@@ -309,7 +308,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 for _, row in df_c_part.sort_values(by='Err_part', ascending=False).head(5).iterrows():
                     axes[1, 0].annotate(row['Proprietaire'][:20], (row['Reel_Conso_Partagee_MWh'], row['Sim_Conso_Partagee_MWh']), fontsize=9, xytext=(5,5), textcoords='offset points')
 
-                df_p_part = df_comparatif[(df_comparatif['Reel_Prod_Partagee_MWh'] > 0) | (df_comparatif['Sim_Prod_Partagee_MWh'] > 0)]
+                df_p_part = df_analyse[(df_analyse['Reel_Prod_Partagee_MWh'] > 0) | (df_analyse['Sim_Prod_Partagee_MWh'] > 0)]
                 axes[1, 1].scatter(df_p_part['Reel_Prod_Partagee_MWh'], df_p_part['Sim_Prod_Partagee_MWh'], color='#f1c40f', alpha=0.8, edgecolor='black', s=60)
                 max_p_part = max(df_p_part['Reel_Prod_Partagee_MWh'].max(), df_p_part['Sim_Prod_Partagee_MWh'].max())
                 if pd.notna(max_p_part) and max_p_part > 0: axes[1, 1].plot([0, max_p_part], [0, max_p_part], 'r--', label='Idéal')
@@ -325,9 +324,9 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.divider()
                 
                 # ---------------------------------------------------------
-                # TABLEAU DE DONNÉES ET TÉLÉCHARGEMENT
+                # TABLEAU DE DONNÉES ET TÉLÉCHARGEMENT (Sur df_comparatif complet)
                 # ---------------------------------------------------------
-                st.subheader("📋 Tableau récapitulatif")
+                st.subheader("📋 Tableau récapitulatif (Tous les membres)")
                 colonnes_a_retirer = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%']
                 df_affichage = df_comparatif.drop(columns=colonnes_a_retirer)
                 st.dataframe(df_affichage, use_container_width=True)
