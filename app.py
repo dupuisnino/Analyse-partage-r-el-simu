@@ -43,38 +43,46 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
                 # ---------------------------------------------------------
-                # ETAPE 2 : FACTURES SIBELGA (DÉTECTION INTELLIGENTE)
+                # ETAPE 2 : FACTURES SIBELGA (DÉTECTION INTELLIGENTE V2)
                 # ---------------------------------------------------------
                 df_reels = pd.read_excel(fichier_factures)
                 colonnes_sibelga = df_reels.columns.tolist()
                 
-                # Détecteur de mots-clés pour trouver la bonne colonne (ignorer majuscules et accents)
+                # Moteur V2 : On teste les listes de mots par ordre de priorité (ex: d'abord ["partage", "kwh"], puis ["partage", "volume"])
                 def trouver_colonne(options_mots_cles, mots_exclus):
-                    for c in colonnes_sibelga:
-                        c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
-                        for mots_cles in options_mots_cles:
+                    for mots_cles in options_mots_cles:
+                        for c in colonnes_sibelga:
+                            c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
+                            # Si tous les mots de la liste actuelle sont dans le titre de la colonne
                             if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
                                 return c
                     return None
 
                 col_ean = trouver_colonne([['ean']], [])
-                col_vol_part = trouver_colonne([['partage']], ['injection', 'production', 'taux'])
-                col_vol_comp = trouver_colonne([['complementaire'], ['residuel', 'consommation'], ['residuel', 'volume']], ['injection', 'production', 'taux'])
-                col_inj_part = trouver_colonne([['partage', 'injection']], ['taux'])
-                col_inj_comp = trouver_colonne([['residuel', 'injection'], ['complementaire', 'injection']], ['taux'])
+                col_vol_part = trouver_colonne([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
+                col_vol_comp = trouver_colonne([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume']], ['injection', 'production', 'taux', 'statut'])
+                col_inj_part = trouver_colonne([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
+                col_inj_comp = trouver_colonne([['residuel', 'injection'], ['complementaire', 'injection']], ['taux', 'statut'])
                 
+                # Sécurité : Si l'appli ne trouve pas une des colonnes, elle s'arrête et t'affiche le problème
                 if not all([col_ean, col_vol_part, col_vol_comp, col_inj_part, col_inj_comp]):
-                    st.error(f"❌ Impossible d'identifier automatiquement les colonnes Sibelga.\nColonnes détectées : {colonnes_sibelga}")
+                    st.error(f"❌ Impossible d'identifier automatiquement TOUTES les colonnes Sibelga.")
+                    st.info(f"**Ce que l'outil a trouvé :**\n- EAN: `{col_ean}`\n- Vol Partagé: `{col_vol_part}`\n- Vol Complémentaire: `{col_vol_comp}`\n- Inj Partagée: `{col_inj_part}`\n- Inj Résiduelle: `{col_inj_comp}`")
+                    st.warning(f"**Toutes les colonnes de votre fichier :** {colonnes_sibelga}")
                     st.stop()
 
                 df_reels[col_ean] = df_reels[col_ean].astype(str).str.strip()
                 colonnes_vol = [col_vol_part, col_vol_comp, col_inj_part, col_inj_comp]
+                
                 for col in colonnes_vol:
+                    # Remplacement magique des virgules européennes par des points
+                    if df_reels[col].dtype == object:
+                        df_reels[col] = df_reels[col].astype(str).str.replace(',', '.')
                     df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                     
                 df_reels_agg = df_reels.groupby(col_ean)[colonnes_vol].sum().reset_index()
                 
-                # On renomme avec nos titres standards pour la suite du code
+                # On renomme proprement en arrière-plan pour que le reste du code marche
                 df_reels_agg = df_reels_agg.rename(columns={
                     col_ean: 'EAN',
                     col_vol_part: 'Volume Partagé (kWh)',
