@@ -22,9 +22,10 @@ fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 # ==========================================
-# VERIFICATION DES COLONNES SIBELGA
+# VERIFICATION DES COLONNES SIBELGA & MOIS
 # ==========================================
-col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel = None, None, None, None, None
+col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel, col_date_sel = None, None, None, None, None, None
+mois_detecte = None
 
 if fichier_factures:
     st.sidebar.header("🔧 2. Vérification des colonnes")
@@ -49,15 +50,38 @@ if fichier_factures:
     idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm'], ['reseau', 'kwh']], ['injection', 'production', 'taux', 'statut', 'partage'])
     idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
     idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
+    
+    # NOUVEAU : Détection de la colonne de Date
+    idx_date = trouver_colonne_index([['fromdate'], ['date', 'debut'], ['from', 'date'], ['periode', 'debut']], ['fin', 'to', 'todate'])
 
+    # Menus de vérification
+    col_date_sel = st.sidebar.selectbox("Colonne Date (Début)", options_colonnes, index=idx_date)
     col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
     col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
     col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Réseau", options_colonnes, index=idx_vol_comp)
     col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
     col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
 
+    # NOUVEAU : Extraction automatique du mois d'après la première ligne de la facture
+    if col_date_sel != "--- À sélectionner ---":
+        try:
+            fichier_factures.seek(0)
+            df_dates = pd.read_excel(fichier_factures, nrows=5) # On lit juste les 5 premières lignes
+            fichier_factures.seek(0) # On remet le fichier à zéro pour la suite
+            
+            premiere_date = df_dates[col_date_sel].dropna().iloc[0]
+            mois_detecte = pd.to_datetime(premiere_date).month
+        except Exception:
+            pass
+
 st.sidebar.header("📅 3. Paramètres")
-mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=1, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
+# Le menu prend le mois détecté par défaut. S'il ne trouve rien, il met Février (index 1) par défaut.
+index_defaut_mois = (mois_detecte - 1) if mois_detecte else 1
+mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=index_defaut_mois, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
+
+if mois_detecte:
+    st.sidebar.success("✅ Mois détecté automatiquement d'après la facture Sibelga !")
+
 
 # ==========================================
 # MOTEUR D'ANALYSE
@@ -142,7 +166,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_sim_p_filtre = df_sim_p[dates.dt.month == mois_cible]
                 sommes_simu = df_sim_p_filtre.sum(numeric_only=True)
                 
-                # 👉 CORRECTION ICI : Nettoyage immédiat des mots techniques
                 participants_bruts = set(col.split('_')[0] for col in df_sim_p.columns if col != 'Unnamed: 0')
                 mots_techniques = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
                 participants_simu = {p.strip() for p in participants_bruts if p.strip().lower() not in mots_techniques}
@@ -171,7 +194,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 eans_inconnus = df_reels_complet[df_reels_complet['Proprietaire_Odoo'] == 'Inconnu']['EAN'].unique()
                 if len(eans_inconnus) > 0: st.error(f"**ALERTE ODOO (EAN facturés mais inconnus dans contacts) :** {', '.join(eans_inconnus)}")
                 
-                # Alerte Mapping mise à jour avec la liste propre
                 simu_sans_mapping = participants_simu - set(mapping_sim.keys())
                 if len(simu_sans_mapping) > 0: st.warning(f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_mapping)}")
 
