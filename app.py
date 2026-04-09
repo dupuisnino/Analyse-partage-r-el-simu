@@ -16,7 +16,7 @@ st.markdown("Importez les 4 fichiers ci-dessous pour lancer l'analyse globale et
 # BARRE LATÉRALE : UPLOADS & PARAMÈTRES
 # ==========================================
 st.sidebar.header("📁 1. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel)", type=['xlsx'])
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=['xlsx'])
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
@@ -66,11 +66,32 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.sidebar.button("🚀 Lancer l'Analyse", type="primary"):
         
         if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
-            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
+            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement.")
             st.stop()
             
         with st.spinner("Calculs en cours..."):
             try:
+                # ---------------------------------------------------------
+                # ETAPE 0 : MAPPING INTELLIGENT (BIDIRECTIONNEL)
+                # ---------------------------------------------------------
+                df_mapping = pd.read_excel(fichier_mapping)
+                
+                # Gestion des virgules et des espaces
+                df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
+                df_mapping = df_mapping.explode('Nom_Streamlit')
+                df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
+                df_mapping = df_mapping.explode('Nom_Reel')
+                
+                df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
+                df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
+                
+                # Détection du Super-Groupe : Si un Streamlit correspond à >1 Odoo, le nom Streamlit devient le maître.
+                count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
+                df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
+                
+                mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
+                mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
+
                 # ---------------------------------------------------------
                 # ETAPE 1 : CONTACTS
                 # ---------------------------------------------------------
@@ -105,7 +126,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 })
                 
                 df_reels_complet = pd.merge(df_reels_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
-                df_reels_complet['Proprietaire'] = df_reels_complet['Groupe_Odoo'].fillna(df_reels_complet['Nom']).fillna("Inconnu")
+                df_reels_complet['Proprietaire_Odoo'] = df_reels_complet['Groupe_Odoo'].fillna(df_reels_complet['Nom']).fillna("Inconnu")
+                
+                # APPLICATION DU NOUVEAU MAPPING POUR LES FACTURES
+                df_reels_complet['Proprietaire'] = df_reels_complet['Proprietaire_Odoo'].map(mapping_reel).fillna(df_reels_complet['Proprietaire_Odoo'])
                 
                 df_reels_complet['Reel_Conso_Partagee_MWh'] = df_reels_complet['Volume Partagé (kWh)'] / 1000.0
                 df_reels_complet['Reel_Conso_Totale_MWh'] = (df_reels_complet['Volume Partagé (kWh)'] + df_reels_complet['Volume Complémentaire (kWh)']) / 1000.0
@@ -116,9 +140,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # ---------------------------------------------------------
                 # ETAPE 3 : SIMULATION
                 # ---------------------------------------------------------
-                df_mapping = pd.read_excel(fichier_mapping)
-                mapping_dict = dict(zip(df_mapping['Nom_Streamlit'].astype(str).str.strip(), df_mapping['Nom_Reel'].astype(str).str.strip()))
-
                 df_sim_p = pd.read_csv(fichier_simu)
                 dates = pd.to_datetime(df_sim_p['Unnamed: 0'])
                 df_sim_p_filtre = df_sim_p[dates.dt.month == mois_cible]
@@ -135,8 +156,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         'Sim_Prod_Totale_MWh': abs(sommes_simu.get(f"{p}_injection_bc", 0)) / 4000.0
                     })
                 df_sim_agg = pd.DataFrame(donnees_simu)
-                df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_dict)
-                df_sim_final = df_sim_agg.dropna(subset=['Proprietaire']).groupby('Proprietaire')[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
+                
+                # APPLICATION DU NOUVEAU MAPPING POUR LA SIMULATION
+                df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
+                df_sim_final = df_sim_agg.groupby('Proprietaire')[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
                 # ---------------------------------------------------------
                 # ETAPE 4 : FUSION & AUDIT
@@ -145,18 +168,18 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
 
                 st.subheader("🚨 Alertes d'Audit")
-                eans_inconnus = df_reels_complet[df_reels_complet['Proprietaire'] == 'Inconnu']['EAN'].unique()
+                eans_inconnus = df_reels_complet[df_reels_complet['Proprietaire_Odoo'] == 'Inconnu']['EAN'].unique()
                 if len(eans_inconnus) > 0: st.error(f"**ALERTE ODOO (EAN facturés mais inconnus dans contacts) :** {', '.join(eans_inconnus)}")
                 
                 participants_propres = set(p.strip() for p in participants_simu)
                 mots_techniques = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
-                simu_sans_mapping = (participants_propres - set(mapping_dict.keys())) - mots_techniques
+                simu_sans_mapping = (participants_propres - set(mapping_sim.keys())) - mots_techniques
                 if len(simu_sans_mapping) > 0: st.warning(f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_mapping)}")
 
                 reel_sans_simu = df_comparatif[df_comparatif['_merge'] == 'left_only']['Proprietaire'].tolist()
                 simu_sans_reel = df_comparatif[df_comparatif['_merge'] == 'right_only']['Proprietaire'].tolist()
                 if reel_sans_simu: st.warning(f"**Facturés mais NON simulés :** {', '.join(reel_sans_simu)}")
-                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci :** {', '.join(simu_sans_reel)} *(Ils ne seront pas inclus dans les graphiques et totaux ci-dessous)*")
+                if simu_sans_reel: st.warning(f"**Simulés mais SANS facture ce mois-ci :** {', '.join(simu_sans_reel)} *(Exclus des graphiques/totaux, gardés dans le tableau)*")
                 
                 if len(eans_inconnus) == 0 and len(simu_sans_mapping) == 0 and not reel_sans_simu and not simu_sans_reel:
                     st.success("✅ Aucun problème détecté. Les bases de données sont parfaitement alignées !")
@@ -164,7 +187,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = df_comparatif.drop(columns=['_merge']).fillna(0)
                 df_comparatif = df_comparatif[(df_comparatif['Reel_Conso_Totale_MWh'] > 0) | (df_comparatif['Sim_Conso_Totale_MWh'] > 0) | (df_comparatif['Reel_Prod_Totale_MWh'] > 0) | (df_comparatif['Sim_Prod_Totale_MWh'] > 0)]
                 
-                # Calculs d'erreurs pour tout le monde (utile pour le tableau final)
+                # Calculs pour tout le monde (pour le tableau Excel complet)
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -178,7 +201,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = df_comparatif.round(3)
 
                 # =========================================================================
-                # NOUVEAU : CRÉATION DE df_analyse (Exclut ceux sans facture Sibelga)
+                # CRÉATION DE df_analyse (On exclut ceux SANS vraie facture)
                 # =========================================================================
                 df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_sans_reel)].copy()
 
