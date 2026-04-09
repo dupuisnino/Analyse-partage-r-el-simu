@@ -66,7 +66,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.sidebar.button("🚀 Lancer l'Analyse", type="primary"):
         
         if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
-            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement.")
+            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
             st.stop()
             
         with st.spinner("Calculs en cours..."):
@@ -76,7 +76,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # ---------------------------------------------------------
                 df_mapping = pd.read_excel(fichier_mapping)
                 
-                # Gestion des virgules et des espaces
                 df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
                 df_mapping = df_mapping.explode('Nom_Streamlit')
                 df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
@@ -85,7 +84,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
                 df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
                 
-                # Détection du Super-Groupe : Si un Streamlit correspond à >1 Odoo, le nom Streamlit devient le maître.
                 count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
                 df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
                 
@@ -128,7 +126,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_reels_complet = pd.merge(df_reels_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
                 df_reels_complet['Proprietaire_Odoo'] = df_reels_complet['Groupe_Odoo'].fillna(df_reels_complet['Nom']).fillna("Inconnu")
                 
-                # APPLICATION DU NOUVEAU MAPPING POUR LES FACTURES
                 df_reels_complet['Proprietaire'] = df_reels_complet['Proprietaire_Odoo'].map(mapping_reel).fillna(df_reels_complet['Proprietaire_Odoo'])
                 
                 df_reels_complet['Reel_Conso_Partagee_MWh'] = df_reels_complet['Volume Partagé (kWh)'] / 1000.0
@@ -145,11 +142,15 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_sim_p_filtre = df_sim_p[dates.dt.month == mois_cible]
                 sommes_simu = df_sim_p_filtre.sum(numeric_only=True)
                 
-                participants_simu = set(col.split('_')[0] for col in df_sim_p.columns if col != 'Unnamed: 0')
+                # 👉 CORRECTION ICI : Nettoyage immédiat des mots techniques
+                participants_bruts = set(col.split('_')[0] for col in df_sim_p.columns if col != 'Unnamed: 0')
+                mots_techniques = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
+                participants_simu = {p.strip() for p in participants_bruts if p.strip().lower() not in mots_techniques}
+                
                 donnees_simu = []
                 for p in participants_simu:
                     donnees_simu.append({
-                        'Nom_Streamlit': p.strip(),
+                        'Nom_Streamlit': p,
                         'Sim_Conso_Partagee_MWh': sommes_simu.get(f"{p}_shared_volume_from_community", 0) / 4000.0,
                         'Sim_Conso_Totale_MWh': sommes_simu.get(f"{p}_residual_consumption_bc", 0) / 4000.0,
                         'Sim_Prod_Partagee_MWh': abs(sommes_simu.get(f"{p}_shared_volume_to_community", 0)) / 4000.0,
@@ -157,7 +158,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     })
                 df_sim_agg = pd.DataFrame(donnees_simu)
                 
-                # APPLICATION DU NOUVEAU MAPPING POUR LA SIMULATION
                 df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                 df_sim_final = df_sim_agg.groupby('Proprietaire')[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
@@ -171,9 +171,8 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 eans_inconnus = df_reels_complet[df_reels_complet['Proprietaire_Odoo'] == 'Inconnu']['EAN'].unique()
                 if len(eans_inconnus) > 0: st.error(f"**ALERTE ODOO (EAN facturés mais inconnus dans contacts) :** {', '.join(eans_inconnus)}")
                 
-                participants_propres = set(p.strip() for p in participants_simu)
-                mots_techniques = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
-                simu_sans_mapping = (participants_propres - set(mapping_sim.keys())) - mots_techniques
+                # Alerte Mapping mise à jour avec la liste propre
+                simu_sans_mapping = participants_simu - set(mapping_sim.keys())
                 if len(simu_sans_mapping) > 0: st.warning(f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_mapping)}")
 
                 reel_sans_simu = df_comparatif[df_comparatif['_merge'] == 'left_only']['Proprietaire'].tolist()
@@ -187,7 +186,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = df_comparatif.drop(columns=['_merge']).fillna(0)
                 df_comparatif = df_comparatif[(df_comparatif['Reel_Conso_Totale_MWh'] > 0) | (df_comparatif['Sim_Conso_Totale_MWh'] > 0) | (df_comparatif['Reel_Prod_Totale_MWh'] > 0) | (df_comparatif['Sim_Prod_Totale_MWh'] > 0)]
                 
-                # Calculs pour tout le monde (pour le tableau Excel complet)
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
