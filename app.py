@@ -16,7 +16,7 @@ st.markdown("Importez les 4 fichiers ci-dessous pour lancer l'analyse globale et
 # BARRE LATÉRALE : UPLOADS & PARAMÈTRES
 # ==========================================
 st.sidebar.header("📁 1. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel)", type=['xlsx'])
 fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=['xlsx'])
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
