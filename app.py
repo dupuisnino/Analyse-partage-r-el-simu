@@ -29,7 +29,6 @@ st.divider()
 st.sidebar.header("📁 1. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 
-# L'interface change en fonction du bouton radio !
 if mode_analyse == "📅 Mensuel (Contrôle de facture)":
     fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=['xlsx'], accept_multiple_files=False)
 else:
@@ -39,17 +38,18 @@ fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 # ==========================================
-# VERIFICATION DES COLONNES SIBELGA
+# VERIFICATION (PREVIEW SUR LE 1ER FICHIER)
 # ==========================================
 col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel, col_date_sel = None, None, None, None, None, None
+mois_detecte = None
 
-# On prend le premier fichier Sibelga pour détecter les colonnes
 first_facture = None
 if fichier_factures:
     first_facture = fichier_factures[0] if isinstance(fichier_factures, list) else fichier_factures
 
 if first_facture:
     st.sidebar.header("🔧 2. Vérification des colonnes")
+    st.sidebar.markdown("*Aperçu de la détection sur le 1er fichier. (L'outil s'adaptera automatiquement aux autres).*")
     
     first_facture.seek(0)
     df_cols = pd.read_excel(first_facture, nrows=0)
@@ -72,12 +72,30 @@ if first_facture:
     idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
     idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
 
-    col_date_sel = st.sidebar.selectbox("Colonne Date (Début)", options_colonnes, index=idx_date)
+    col_date_sel = st.sidebar.selectbox("Colonne Date", options_colonnes, index=idx_date)
     col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
     col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
-    col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Réseau", options_colonnes, index=idx_vol_comp)
+    col_vol_comp_sel = st.sidebar.selectbox("Conso Résiduelle/Réseau", options_colonnes, index=idx_vol_comp)
     col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
-    col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
+    col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle", options_colonnes, index=idx_inj_comp)
+
+    # Preview du mois (Uniquement pour le mode Mensuel)
+    if mode_analyse == "📅 Mensuel (Contrôle de facture)" and col_date_sel != "--- À sélectionner ---":
+        try:
+            first_facture.seek(0)
+            df_dates = pd.read_excel(first_facture, nrows=5)
+            first_facture.seek(0)
+            premiere_date = df_dates[col_date_sel].dropna().iloc[0]
+            mois_detecte = pd.to_datetime(premiere_date).month
+        except:
+            pass
+
+if mode_analyse == "📅 Mensuel (Contrôle de facture)":
+    st.sidebar.header("📅 3. Paramètres")
+    index_defaut_mois = (mois_detecte - 1) if mois_detecte else 1
+    mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=index_defaut_mois, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
+    if mois_detecte:
+        st.sidebar.success("✅ Mois détecté automatiquement !")
 
 
 # ==========================================
@@ -86,10 +104,6 @@ if first_facture:
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.button("🚀 Lancer le calcul", type="primary", use_container_width=True):
         
-        if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel, col_date_sel]:
-            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner dans le menu de gauche.")
-            st.stop()
-            
         with st.spinner("Analyse et fusion des bases de données en cours..."):
             try:
                 # ---------------------------------------------------------
@@ -119,7 +133,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
                 # ---------------------------------------------------------
-                # 2. FACTURES SIBELGA (Gère 1 ou plusieurs fichiers)
+                # 2. FACTURES SIBELGA (DÉTECTION DYNAMIQUE PAR FICHIER)
                 # ---------------------------------------------------------
                 factures_list = fichier_factures if isinstance(fichier_factures, list) else [fichier_factures]
                 df_reels_complet_list = []
@@ -127,26 +141,45 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 for fact in factures_list:
                     fact.seek(0)
                     df_reels = pd.read_excel(fact, dtype=str)
+                    colonnes_locales = df_reels.columns.tolist()
+
+                    # Détection spécifique pour CE fichier !
+                    def trouver_col_locale(options_mots_cles, mots_exclus):
+                        for mots_cles in options_mots_cles:
+                            for c in colonnes_locales:
+                                c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
+                                if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
+                                    return c
+                        return None
+
+                    c_date = trouver_col_locale([['fromdate'], ['date', 'debut'], ['from', 'date'], ['periode', 'debut']], ['fin', 'to', 'todate'])
+                    c_ean = trouver_col_locale([['ean']], [])
+                    c_vol_part = trouver_col_locale([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
+                    c_vol_comp = trouver_col_locale([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm'], ['reseau', 'kwh']], ['injection', 'production', 'taux', 'statut', 'partage'])
+                    c_inj_part = trouver_col_locale([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
+                    c_inj_comp = trouver_col_locale([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
+
+                    if not all([c_date, c_ean, c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]):
+                        st.error(f"❌ Erreur critique : Impossible d'identifier toutes les colonnes dans le fichier '{fact.name}'. Sibelga a utilisé une nomenclature inconnue.")
+                        st.stop()
                     
-                    # Extraction du mois pour ce fichier précis
-                    fact.seek(0)
-                    df_dates = pd.read_excel(fact, nrows=5)
-                    premiere_date = df_dates[col_date_sel].dropna().iloc[0]
+                    # Extraction du mois pour ce fichier
+                    premiere_date = df_reels[c_date].dropna().iloc[0]
                     mois_en_cours = pd.to_datetime(premiere_date).month
 
-                    df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
-                    colonnes_vol = [col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]
+                    df_reels[c_ean] = df_reels[c_ean].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+                    colonnes_vol = [c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]
                     
                     for col in colonnes_vol:
                         if df_reels[col].dtype == object:
                             df_reels[col] = df_reels[col].astype(str).str.replace(',', '.')
                         df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                         
-                    df_reels_agg = df_reels.groupby(col_ean_sel)[colonnes_vol].sum().reset_index()
+                    df_reels_agg = df_reels.groupby(c_ean)[colonnes_vol].sum().reset_index()
                     df_reels_agg = df_reels_agg.rename(columns={
-                        col_ean_sel: 'EAN', col_vol_part_sel: 'Volume Partagé (kWh)',
-                        col_vol_comp_sel: 'Volume Complémentaire (kWh)', col_inj_part_sel: 'Injection Partagée (kWh)',
-                        col_inj_comp_sel: 'Injection Résiduelle (kWh)'
+                        c_ean: 'EAN', c_vol_part: 'Volume Partagé (kWh)',
+                        c_vol_comp: 'Volume Complémentaire (kWh)', c_inj_part: 'Injection Partagée (kWh)',
+                        c_inj_comp: 'Injection Résiduelle (kWh)'
                     })
                     
                     df_reels_c = pd.merge(df_reels_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
@@ -171,7 +204,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 dates = pd.to_datetime(df_sim_p['Unnamed: 0'])
                 df_sim_p['Mois_Simu'] = dates.dt.month
                 
-                # On ne garde que les mois qui ont été trouvés dans les factures Sibelga
+                # On ne garde que les mois qui ont été trouvés dans les factures Sibelga uploadées
                 mois_presents_sibelga = df_reels_all['Mois'].unique().tolist()
                 df_sim_p = df_sim_p[df_sim_p['Mois_Simu'].isin(mois_presents_sibelga)]
 
@@ -233,13 +266,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif['Abs_Erreur_Prod_%'] = df_comparatif['Erreur_Prod_%'].abs()
                 df_comparatif = df_comparatif.round(3)
 
-                # Base saine : on exclut ceux qui n'ont jamais eu de facture de l'année
+                # Base saine
                 df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_sans_reel)].copy()
                 noms_mois = {1:'Jan', 2:'Fév', 3:'Mar', 4:'Avr', 5:'Mai', 6:'Juin', 7:'Juil', 8:'Août', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Déc'}
 
-
                 # ==============================================================================
-                # 🎨 AFFICHAGE CONDITIONNEL : MENSUEL OU ANNUEL
+                # 🎨 AFFICHAGE CONDITIONNEL
                 # ==============================================================================
                 st.divider()
                 st.subheader("🌍 Analyse Globale de la Communauté")
@@ -263,9 +295,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.divider()
 
                 if mode_analyse == "📆 Annuel (Saisonnalité & Bilan)":
-                    # --- VUE ANNUELLE ---
                     
-                    # 1. Courbe de tendance globale
                     st.subheader("📈 Saisonnalité et Tendance Globale")
                     df_trend = df_analyse.groupby('Mois')[['Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh']].sum().reset_index().sort_values('Mois')
                     df_trend['Mois_Nom'] = df_trend['Mois'].map(noms_mois)
@@ -278,24 +308,20 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     st.pyplot(fig_trend)
                     st.divider()
 
-                    # 2. Carte de Chaleur (Heatmap)
                     st.subheader("🗺️ Carte de Chaleur des Erreurs (%)")
                     st.markdown("*Une case **Grise** indique que le membre n'avait pas de facture Sibelga sur ce mois.*")
                     
-                    # Remplacement magique par NaN pour les mois sans facture pour déclencher le gris
                     df_analyse['Erreur_Heatmap'] = np.where(df_analyse['Has_Facture'], df_analyse['Erreur_Conso_%'], np.nan)
                     pivot_heat = df_analyse.pivot(index='Proprietaire', columns='Mois', values='Erreur_Heatmap')
                     pivot_heat.rename(columns=noms_mois, inplace=True)
                     
                     fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
-                    ax_heat.set_facecolor('#ecf0f1') # Couleur grise pour les cases vides
+                    ax_heat.set_facecolor('#ecf0f1') 
                     sns.heatmap(pivot_heat, cmap='coolwarm', center=0, annot=True, fmt=".0f", ax=ax_heat, cbar_kws={'label': "Erreur % (Sim vs Reel)"}, linewidths=0.5)
-                    ax_heat.set_ylabel('')
-                    ax_heat.set_xlabel('')
+                    ax_heat.set_ylabel(''); ax_heat.set_xlabel('')
                     st.pyplot(fig_heat)
                     st.divider()
 
-                    # 3. Profil Individuel
                     st.subheader("👤 Profil Individuel du Membre")
                     membres_liste = sorted(df_analyse['Proprietaire'].unique())
                     membre_choisi = st.selectbox("Sélectionnez un membre pour analyser son année :", membres_liste)
@@ -309,7 +335,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     tot_i_sim = df_indiv['Sim_Conso_Totale_MWh'].sum()
                     err_i_pct = ((tot_i_sim - tot_i_reel) / tot_i_reel * 100) if tot_i_reel > 0 else 0
                     
-                    col_i1.metric(f"Bilan Annuel Consommation", f"{tot_i_reel:.2f} MWh", f"{err_i_pct:+.1f}% d'erreur simulée", delta_color="off")
+                    col_i1.metric(f"Bilan Consommation", f"{tot_i_reel:.2f} MWh", f"{err_i_pct:+.1f}% d'erreur", delta_color="off")
                     
                     fig_indiv, ax_indiv = plt.subplots(figsize=(8, 4))
                     ax_indiv.plot(df_indiv['Mois_Nom'], df_indiv['Reel_Conso_Totale_MWh'], marker='o', color='#9b59b6', label='Consommation Réelle')
@@ -319,8 +345,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     col_i2.pyplot(fig_indiv)
 
                 else:
-                    # --- VUE MENSUELLE CLASSIQUE (L'ancien Dashboard) ---
-                    # Comme c'est Mensuel, on fusionne sur le seul mois disponible pour les barres
+                    # --- VUE MENSUELLE ---
                     df_mensuel = df_analyse.groupby('Proprietaire')[['Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 'Erreur_Conso_MWh', 'Erreur_Prod_MWh', 'Erreur_Conso_%', 'Erreur_Prod_%', 'Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%']].sum().reset_index()
 
                     st.subheader("📉 Pire dimensionnement (%)")
@@ -329,8 +354,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     if not df_pire_conso_pct.empty:
                         fig_bar_conso_pct, ax3 = plt.subplots(figsize=(8, 5))
                         sns.barplot(data=df_pire_conso_pct, x='Erreur_Conso_%', y='Proprietaire', palette=['#e74c3c' if val > 0 else '#3498db' for val in df_pire_conso_pct['Erreur_Conso_%']], ax=ax3)
-                        ax3.set_title('CONSOMMATION (%)', fontweight='bold')
-                        ax3.axvline(0, color='black', linewidth=1); ax3.set_ylabel('')
+                        ax3.set_title('CONSOMMATION (%)', fontweight='bold'); ax3.axvline(0, color='black', linewidth=1); ax3.set_ylabel('')
                         col3.pyplot(fig_bar_conso_pct)
 
                     df_pire_prod_pct = df_mensuel.sort_values(by='Abs_Erreur_Prod_%', ascending=False).head(10).copy()
@@ -338,8 +362,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     if not df_pire_prod_pct.empty:
                         fig_bar_prod_pct, ax4 = plt.subplots(figsize=(8, 5))
                         sns.barplot(data=df_pire_prod_pct, x='Erreur_Prod_%', y='Proprietaire', palette=['#e74c3c' if val > 0 else '#3498db' for val in df_pire_prod_pct['Erreur_Prod_%']], ax=ax4)
-                        ax4.set_title('PRODUCTION (%)', fontweight='bold')
-                        ax4.axvline(0, color='black', linewidth=1); ax4.set_ylabel('')
+                        ax4.set_title('PRODUCTION (%)', fontweight='bold'); ax4.axvline(0, color='black', linewidth=1); ax4.set_ylabel('')
                         col4.pyplot(fig_bar_prod_pct)
 
                     st.divider()
@@ -362,9 +385,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     st.pyplot(fig_nuage)
 
 
-                # ---------------------------------------------------------
-                # FIN : TELECHARGEMENT GLOBAL (Vaut pour Mensuel & Annuel)
-                # ---------------------------------------------------------
                 st.divider()
                 st.subheader("📋 Base de Données Complète")
                 colonnes_a_retirer = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%', 'Has_Facture']
