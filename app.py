@@ -103,7 +103,10 @@ if mois_detecte:
 # MOTEUR D'ANALYSE
 # ==========================================
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
-    if st.sidebar.button("🚀 Lancer l'Analyse", type="primary"):
+    if st.button("🚀 Lancer le calcul", type="primary", use_container_width=True):
+        st.session_state['calcul_lance'] = True
+        
+    if st.session_state.get('calcul_lance', False):
         
         if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
             st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
@@ -402,10 +405,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         mime="text/csv",
                         type="primary"
                     )
-                # =========================================================
-                # 🔵 MODE ANNUEL (Totalement indépendant)
-                # =========================================================
-                elif mode_analyse == "📆 Annuel (Bilan)":
+               # =================================================================================================
+                # 🔵🔵🔵 MODE ANNUEL (TOTALEMENT ISOLÉ) 🔵🔵🔵
+                # =================================================================================================
+                elif mode_analyse == "📆 Annuel (Saisonnalité & Bilan)":
                     
                     # --- 1. MAPPING ---
                     df_mapping = pd.read_excel(fichier_mapping)
@@ -450,7 +453,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         c_inj_comp = trv([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'consomm'])
 
                         if not all([c_date, c_ean, c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]):
-                            continue # Ignore le fichier s'il est illisible
+                            continue 
 
                         m_encours = pd.to_datetime(df_r[c_date].dropna().iloc[0]).month
                         df_r[c_ean] = df_r[c_ean].astype(str).str.replace(' ','').str.replace(r'\.0$','',regex=True).str.strip()
@@ -550,22 +553,26 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     st.divider()
 
                     st.subheader("📈 Saisonnalité et Tendance")
-                    df_trend = df_analyse.groupby('Mois')[['Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh']].sum().reset_index().sort_values('Mois')
+                    # CORRECTION ICI : On ne garde la simulation QUE pour les mois où le membre est bien présent sur Sibelga !
+                    df_trend_data = df_analyse[df_analyse['Has_Facture'] == True]
+                    df_trend = df_trend_data.groupby('Mois')[['Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh']].sum().reset_index().sort_values('Mois')
                     df_trend['Mois_Nom'] = df_trend['Mois'].map(noms_mois)
+                    
                     fig_trend, ax_trend = plt.subplots(figsize=(12, 4))
                     ax_trend.plot(df_trend['Mois_Nom'], df_trend['Reel_Conso_Totale_MWh'], marker='o', color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
                     ax_trend.plot(df_trend['Mois_Nom'], df_trend['Sim_Conso_Totale_MWh'], marker='x', color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
                     ax_trend.set_ylabel('MWh'); ax_trend.legend(); st.pyplot(fig_trend)
                     st.divider()
 
-                    st.subheader("🗺️ Carte de Chaleur des Erreurs (%)")
+                    st.subheader("🗺️ Heatmap des Erreurs (MWh)")
                     st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
-                    df_analyse['Erreur_Heatmap'] = np.where(df_analyse['Has_Facture'], df_analyse['Erreur_Conso_%'], np.nan)
+                    # CORRECTION ICI : Utilisation de Erreur_Conso_MWh au lieu du pourcentage
+                    df_analyse['Erreur_Heatmap'] = np.where(df_analyse['Has_Facture'], df_analyse['Erreur_Conso_MWh'], np.nan)
                     pivot_heat = df_analyse.pivot(index='Proprietaire', columns='Mois', values='Erreur_Heatmap')
                     pivot_heat.rename(columns=noms_mois, inplace=True)
                     fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
                     ax_heat.set_facecolor('#ecf0f1') 
-                    sns.heatmap(pivot_heat, cmap='coolwarm', center=0, annot=True, fmt=".0f", ax=ax_heat, cbar_kws={'label': "Erreur %"}, linewidths=0.5)
+                    sns.heatmap(pivot_heat, cmap='coolwarm', center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
                     ax_heat.set_ylabel(''); ax_heat.set_xlabel(''); st.pyplot(fig_heat)
                     st.divider()
 
@@ -583,11 +590,27 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax_indiv.plot(df_indiv['Mois_Nom'], df_indiv['Sim_Conso_Totale_MWh'], marker='x', color='#f1c40f', linestyle='--', label='Consommation Simulée')
                     ax_indiv.set_ylabel('MWh'); ax_indiv.legend(); col_i2.pyplot(fig_indiv)
 
-                    st.divider()
-                    st.subheader("📋 Données Annuelles")
-                    st.dataframe(df_comparatif.drop(columns=['Has_Facture'], errors='ignore'), use_container_width=True)
-                    csv_annuel = df_comparatif.drop(columns=['Has_Facture'], errors='ignore').to_csv(index=False, sep=';', decimal=',').encode('utf-8')
-                    st.download_button("📥 Télécharger le rapport Annuel", data=csv_annuel, file_name="Audit_Annuel.csv", mime="text/csv", type="primary")
+                # =================================================================================================
+                # 📥 TÉLÉCHARGEMENT COMMUN (VALABLE POUR LES DEUX MODES)
+                # =================================================================================================
+                st.divider()
+                st.subheader("📋 Base de Données Complète")
+                cols_to_drop = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%']
+                if 'Has_Facture' in df_comparatif.columns: cols_to_drop.append('Has_Facture')
+                
+                df_affichage = df_comparatif.drop(columns=cols_to_drop, errors='ignore')
+                st.dataframe(df_affichage, use_container_width=True)
+                
+                csv = df_affichage.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
+                nom_fichier = f"Audit_Mois_{mois_cible}.csv" if mode_analyse == "📅 Mensuel (Contrôle)" else "Audit_Annuel_Global.csv"
+                
+                st.download_button(
+                    label="📥 Télécharger le rapport complet pour Excel",
+                    data=csv,
+                    file_name=nom_fichier,
+                    mime="text/csv",
+                    type="primary"
+                )
 
             except Exception as e:
                 st.error(f"❌ Une erreur s'est produite lors de l'analyse : {e}")
