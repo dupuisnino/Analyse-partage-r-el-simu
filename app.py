@@ -117,7 +117,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # =========================================================
                 # 🟢 MODE MENSUEL (Ton code actuel intouché)
                 # =========================================================
-                if mode_analyse == "📅 Mensuel (Contrôle)":
+                if "Mensuel" in mode_analyse:
                     # ---------------------------------------------------------
                     # ETAPE 0 : MAPPING INTELLIGENT (BIDIRECTIONNEL)
                     # ---------------------------------------------------------
@@ -408,7 +408,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                # =================================================================================================
                 # 🔵🔵🔵 MODE ANNUEL (TOTALEMENT ISOLÉ) 🔵🔵🔵
                 # =================================================================================================
-                elif mode_analyse == "📆 Annuel (Saisonnalité & Bilan)":
+                else:
                     
                     # --- 1. MAPPING ---
                     df_mapping = pd.read_excel(fichier_mapping)
