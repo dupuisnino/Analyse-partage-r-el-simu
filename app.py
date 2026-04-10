@@ -37,13 +37,19 @@ fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['
 col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel, col_date_sel = None, None, None, None, None, None
 mois_detecte = None
 
+# On isole le premier fichier pour éviter le plantage
+first_facture = None
 if fichier_factures:
+    first_facture = fichier_factures[0] if isinstance(fichier_factures, list) else fichier_factures
+
+if first_facture:
     st.sidebar.header("🔧 2. Vérification des colonnes")
     st.sidebar.markdown("*L'outil a pré-sélectionné les colonnes Sibelga. Corrigez-les si nécessaire.*")
     
-    fichier_factures.seek(0)
-    df_cols = pd.read_excel(fichier_factures, nrows=0)
-    fichier_factures.seek(0)
+    first_facture.seek(0)
+    df_cols = pd.read_excel(first_facture, nrows=0)
+    first_facture.seek(0)
+    
     colonnes_sibelga = df_cols.columns.tolist()
     options_colonnes = ["--- À sélectionner ---"] + colonnes_sibelga
     
