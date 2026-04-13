@@ -24,7 +24,7 @@ st.sidebar.header("📁 1. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 
 # L'upload Sibelga change selon le mode choisi !
-if mode_analyse == "📅 Mensuel (Contrôle)":
+if "Mensuel" in mode_analyse:
     fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=['xlsx'])
 else:
     fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez les 12 mois)", type=['xlsx'], accept_multiple_files=True)
@@ -68,10 +68,8 @@ if first_facture:
     idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
     idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
     
-    # NOUVEAU : Détection de la colonne de Date
     idx_date = trouver_colonne_index([['fromdate'], ['date', 'debut'], ['from', 'date'], ['periode', 'debut']], ['fin', 'to', 'todate'])
 
-    # Menus de vérification
     col_date_sel = st.sidebar.selectbox("Colonne Date (Début)", options_colonnes, index=idx_date)
     col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
     col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
@@ -79,25 +77,25 @@ if first_facture:
     col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
     col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
 
-    # NOUVEAU : Extraction automatique du mois d'après la première ligne de la facture
+    # Extraction automatique du mois d'après la première ligne de la facture (Utile pour le mode mensuel)
     if col_date_sel != "--- À sélectionner ---":
         try:
             first_facture.seek(0)
-            df_dates = pd.read_excel(first_facture, nrows=5) # On lit juste les 5 premières lignes
-            first_facture.seek(0) # On remet le fichier à zéro pour la suite
+            df_dates = pd.read_excel(first_facture, nrows=5)
+            first_facture.seek(0) 
             
             premiere_date = df_dates[col_date_sel].dropna().iloc[0]
             mois_detecte = pd.to_datetime(premiere_date).month
         except Exception:
             pass
 
-st.sidebar.header("📅 3. Paramètres")
-# Le menu prend le mois détecté par défaut. S'il ne trouve rien, il met Février (index 1) par défaut.
-index_defaut_mois = (mois_detecte - 1) if mois_detecte else 1
-mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=index_defaut_mois, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
+if "Mensuel" in mode_analyse:
+    st.sidebar.header("📅 3. Paramètres")
+    index_defaut_mois = (mois_detecte - 1) if mois_detecte else 1
+    mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=index_defaut_mois, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
 
-if mois_detecte:
-    st.sidebar.success("✅ Mois détecté automatiquement d'après la facture Sibelga !")
+    if mois_detecte:
+        st.sidebar.success("✅ Mois détecté automatiquement d'après la facture Sibelga !")
 
 
 # ==========================================
@@ -110,49 +108,44 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     if st.session_state.get('calcul_lance', False):
         
         if "--- À sélectionner ---" in [col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]:
-            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche (Étape 2) avant de lancer l'analyse.")
+            st.error("❌ Oups ! Certaines colonnes Sibelga n'ont pas pu être trouvées. Veuillez les sélectionner manuellement dans le menu de gauche avant de lancer l'analyse.")
             st.stop()
             
         with st.spinner("Calculs en cours..."):
             try:
+                # ---------------------------------------------------------
+                # BASE COMMUNE : MAPPING ET CONTACTS
+                # ---------------------------------------------------------
+                df_mapping = pd.read_excel(fichier_mapping)
+                df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
+                df_mapping = df_mapping.explode('Nom_Streamlit')
+                df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
+                df_mapping = df_mapping.explode('Nom_Reel')
+                
+                df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
+                df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
+                
+                count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
+                df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
+                
+                mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
+                mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
+
+                df_contacts = pd.read_excel(fichier_contacts, dtype=str)
+                est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
+                df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
+                df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
+                df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
+                df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+                df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
+                
+                noms_mois = {1:'Jan', 2:'Fév', 3:'Mar', 4:'Avr', 5:'Mai', 6:'Juin', 7:'Juil', 8:'Août', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Déc'}
+
                 # =========================================================
-                # 🟢 MODE MENSUEL (Ton code actuel intouché)
+                # 🟢 MODE MENSUEL 
                 # =========================================================
                 if "Mensuel" in mode_analyse:
-                    # ---------------------------------------------------------
-                    # ETAPE 0 : MAPPING INTELLIGENT (BIDIRECTIONNEL)
-                    # ---------------------------------------------------------
-                    df_mapping = pd.read_excel(fichier_mapping)
-                    
-                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
-                    df_mapping = df_mapping.explode('Nom_Streamlit')
-                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
-                    df_mapping = df_mapping.explode('Nom_Reel')
-                    
-                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
-                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
-                    
-                    count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
-                    df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
-                    
-                    mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
-                    mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
-    
-                    # ---------------------------------------------------------
-                    # ETAPE 1 : CONTACTS
-                    # ---------------------------------------------------------
-                    df_contacts = pd.read_excel(fichier_contacts, dtype=str)
-                    est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
-                    df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
-                    df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
-                    df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
-                    df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
-                    df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
-                    
-                    # ---------------------------------------------------------
-                    # ETAPE 2 : FACTURES SIBELGA
-                    # ---------------------------------------------------------
-                    df_reels = pd.read_excel(fichier_factures, dtype=str)
+                    df_reels = pd.read_excel(first_facture, dtype=str)
                     df_reels[col_ean_sel] = df_reels[col_ean_sel].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                     colonnes_vol = [col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel]
                     
@@ -162,18 +155,13 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         df_reels[col] = pd.to_numeric(df_reels[col], errors='coerce').fillna(0)
                         
                     df_reels_agg = df_reels.groupby(col_ean_sel)[colonnes_vol].sum().reset_index()
-                    
                     df_reels_agg = df_reels_agg.rename(columns={
-                        col_ean_sel: 'EAN',
-                        col_vol_part_sel: 'Volume Partagé (kWh)',
-                        col_vol_comp_sel: 'Volume Complémentaire (kWh)',
-                        col_inj_part_sel: 'Injection Partagée (kWh)',
-                        col_inj_comp_sel: 'Injection Résiduelle (kWh)'
+                        col_ean_sel: 'EAN', col_vol_part_sel: 'Volume Partagé (kWh)', col_vol_comp_sel: 'Volume Complémentaire (kWh)',
+                        col_inj_part_sel: 'Injection Partagée (kWh)', col_inj_comp_sel: 'Injection Résiduelle (kWh)'
                     })
                     
                     df_reels_complet = pd.merge(df_reels_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
                     df_reels_complet['Proprietaire_Odoo'] = df_reels_complet['Groupe_Odoo'].fillna(df_reels_complet['Nom']).fillna("Inconnu")
-                    
                     df_reels_complet['Proprietaire'] = df_reels_complet['Proprietaire_Odoo'].map(mapping_reel).fillna(df_reels_complet['Proprietaire_Odoo'])
                     
                     df_reels_complet['Reel_Conso_Partagee_MWh'] = df_reels_complet['Volume Partagé (kWh)'] / 1000.0
@@ -182,9 +170,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_reels_complet['Reel_Prod_Totale_MWh'] = (df_reels_complet['Injection Partagée (kWh)'] + df_reels_complet['Injection Résiduelle (kWh)']) / 1000.0
                     df_reels_final = df_reels_complet.groupby('Proprietaire')[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
     
-                    # ---------------------------------------------------------
-                    # ETAPE 3 : SIMULATION
-                    # ---------------------------------------------------------
                     df_sim_p = pd.read_csv(fichier_simu)
                     dates = pd.to_datetime(df_sim_p['Unnamed: 0'])
                     df_sim_p_filtre = df_sim_p[dates.dt.month == mois_cible]
@@ -208,9 +193,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                     df_sim_final = df_sim_agg.groupby('Proprietaire')[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
     
-                    # ---------------------------------------------------------
-                    # ETAPE 4 : FUSION & AUDIT
-                    # ---------------------------------------------------------
                     df_comparatif = pd.merge(df_reels_final, df_sim_final, on='Proprietaire', how='outer', indicator=True)
                     df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
     
@@ -243,15 +225,8 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_comparatif['Abs_Erreur_Prod_%'] = df_comparatif['Erreur_Prod_%'].abs()
     
                     df_comparatif = df_comparatif.round(3)
-    
-                    # =========================================================================
-                    # CRÉATION DE df_analyse (On exclut ceux SANS vraie facture)
-                    # =========================================================================
                     df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_sans_reel)].copy()
     
-                    # ---------------------------------------------------------
-                    # ANALYSE GLOBALE DE LA COMMUNAUTÉ (Sur df_analyse)
-                    # ---------------------------------------------------------
                     st.divider()
                     st.subheader("🌍 Analyse Globale de la Communauté")
                     col_met1, col_met2, col_met3 = st.columns(3)
@@ -273,10 +248,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     col_met3.metric("🤝 Total Échangé (MWh)", f"{tot_reel_ech:.2f}", f"{pct_ech:+.1f}% (Simu: {tot_sim_ech:.2f})", delta_color="off")
     
                     st.divider()
-    
-                    # ---------------------------------------------------------
-                    # GRAPHIQUE 1 : PIRE DIMENSIONNEMENT EN MWh (Sur df_analyse)
-                    # ---------------------------------------------------------
                     st.subheader("📉 Pire dimensionnement (MWh)")
                     col1, col2 = st.columns(2)
                     
@@ -305,12 +276,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         col2.pyplot(fig_bar_prod)
     
                     st.divider()
-    
-                    # ---------------------------------------------------------
-                    # GRAPHIQUE 2 : PIRE DIMENSIONNEMENT EN % (Sur df_analyse)
-                    # ---------------------------------------------------------
                     st.subheader("📉 Pire dimensionnement (%)")
-                    st.markdown("*Utile pour repérer les membres qui verront une énorme différence sur leur facture.*")
                     col3, col4 = st.columns(2)
                     
                     df_pire_conso_pct = df_analyse.sort_values(by='Abs_Erreur_Conso_%', ascending=False)
@@ -340,10 +306,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         col4.pyplot(fig_bar_prod_pct)
     
                     st.divider()
-    
-                    # ---------------------------------------------------------
-                    # GRAPHIQUE 3 : LES 4 NUAGES DE POINTS (Sur df_analyse)
-                    # ---------------------------------------------------------
                     st.subheader("📊 Vue globale : Réalité vs Simulation")
                     fig_nuage, axes = plt.subplots(2, 2, figsize=(16, 14))
                     
@@ -387,36 +349,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     
                     plt.tight_layout()
                     st.pyplot(fig_nuage)
-    
-                    st.divider()
+
 
                 # =================================================================================================
-                # 🔵🔵🔵 MODE ANNUEL (Saisonnalité & Bilan interactif)
+                # 🔵 MODE ANNUEL (Bilan & Tendance Globale)
                 # =================================================================================================
                 else:
-                    # --- 1. MAPPING ---
-                    df_mapping = pd.read_excel(fichier_mapping)
-                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
-                    df_mapping = df_mapping.explode('Nom_Streamlit')
-                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
-                    df_mapping = df_mapping.explode('Nom_Reel')
-                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
-                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
-                    count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
-                    df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
-                    mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
-                    mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
-
-                    # --- 2. CONTACTS ---
-                    df_contacts = pd.read_excel(fichier_contacts, dtype=str)
-                    est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
-                    df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
-                    df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
-                    df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
-                    df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
-                    df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
-
-                    # --- 3. TOUS LES FICHIERS SIBELGA ---
                     df_reels_list = []
                     for fact in fichier_factures:
                         fact.seek(0)
@@ -439,13 +377,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         if not all([c_date, c_ean, c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]):
                             continue 
 
-                        # Extraction Année et Mois chronologique
+                        # 1. TRI CHRONOLOGIQUE INTELLIGENT (Année + Mois)
                         premiere_date = pd.to_datetime(df_r[c_date].dropna().iloc[0])
                         m_encours = premiere_date.month
                         y_encours = premiere_date.year
                         
                         df_r[c_ean] = df_r[c_ean].astype(str).str.replace(' ','').str.replace(r'\.0$','',regex=True).str.strip()
-                        
                         for c in [c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]:
                             if df_r[c].dtype == object: df_r[c] = df_r[c].astype(str).str.replace(',', '.')
                             df_r[c] = pd.to_numeric(df_r[c], errors='coerce').fillna(0)
@@ -461,9 +398,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
                         df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée (kWh)'] / 1000.0
                         df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée (kWh)'] + df_c['Injection Résiduelle (kWh)']) / 1000.0
+                        
                         df_c['Mois'] = m_encours
                         df_c['Annee'] = y_encours
-                        df_c['Sort_Key'] = y_encours * 100 + m_encours # Pour le tri temporel absolu
+                        df_c['Sort_Key'] = y_encours * 100 + m_encours # Clé pour trier "2025-08" avant "2026-02"
                         df_reels_list.append(df_c)
 
                     if not df_reels_list:
@@ -473,10 +411,8 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_reels_all = pd.concat(df_reels_list)
                     df_reels_final = df_reels_all.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                    # On mémorise la clé de tri par mois pour la simulation
                     mois_annee_map = df_reels_all[['Mois', 'Annee', 'Sort_Key']].drop_duplicates().set_index('Mois')
 
-                    # --- 4. SIMULATION STREAMLIT SUR LES MOIS PRESENTS ---
                     df_s = pd.read_csv(fichier_simu)
                     df_s['Mois_Simu'] = pd.to_datetime(df_s['Unnamed: 0']).dt.month
                     mois_presents = df_reels_all['Mois'].unique().tolist()
@@ -501,7 +437,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                     df_sim_final = df_sim_agg.groupby(['Proprietaire', 'Mois'])[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
-                    # --- 5. FUSION ANNUELLE ---
                     df_comparatif = pd.merge(df_reels_final, df_sim_final, on=['Proprietaire', 'Mois'], how='outer', indicator=True)
                     df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
                     df_comparatif['Has_Facture'] = df_comparatif['_merge'].isin(['both', 'left_only'])
@@ -529,52 +464,58 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                     df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                     df_comparatif['Erreur_Partage_MWh'] = df_comparatif['Sim_Conso_Partagee_MWh'] - df_comparatif['Reel_Conso_Partagee_MWh']
-                    
+
                     df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_jamais_fact)].copy()
-                    
-                    noms_mois = {1:'Jan', 2:'Fév', 3:'Mar', 4:'Avr', 5:'Mai', 6:'Juin', 7:'Juil', 8:'Août', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Déc'}
                     df_analyse['Periode_Str'] = df_analyse['Mois'].map(noms_mois) + " '" + df_analyse['Annee'].astype(int).astype(str).str[-2:]
                     df_analyse = df_analyse.sort_values('Sort_Key')
 
-                    # --- 6. GRAPHIQUES ANNUELS ---
                     st.divider()
                     st.subheader("🌍 Bilan Annuel Global")
                     col_a1, col_a2, col_a3 = st.columns(3)
-                    t_rc = df_analyse['Reel_Conso_Totale_MWh'].sum()
-                    pc_c = ((df_analyse['Sim_Conso_Totale_MWh'].sum() - t_rc) / t_rc * 100) if t_rc > 0 else 0
-                    t_rp = df_analyse['Reel_Prod_Totale_MWh'].sum()
-                    pc_p = ((df_analyse['Sim_Prod_Totale_MWh'].sum() - t_rp) / t_rp * 100) if t_rp > 0 else 0
-                    t_re = df_analyse['Reel_Conso_Partagee_MWh'].sum()
-                    pc_e = ((df_analyse['Sim_Conso_Partagee_MWh'].sum() - t_re) / t_re * 100) if t_re > 0 else 0
                     
-                    col_a1.metric("⚡ Total Consommé (Cumulé)", f"{t_rc:.2f} MWh", f"{pc_c:+.1f}% (Simu: {df_analyse['Sim_Conso_Totale_MWh'].sum():.2f})", delta_color="off")
-                    col_a2.metric("☀️ Total Produit (Cumulé)", f"{t_rp:.2f} MWh", f"{pc_p:+.1f}% (Simu: {df_analyse['Sim_Prod_Totale_MWh'].sum():.2f})", delta_color="off")
-                    col_a3.metric("🤝 Total Échangé (Cumulé)", f"{t_re:.2f} MWh", f"{pc_e:+.1f}% (Simu: {df_analyse['Sim_Conso_Partagee_MWh'].sum():.2f})", delta_color="off")
+                    t_rc = df_analyse['Reel_Conso_Totale_MWh'].sum()
+                    t_sc = df_analyse['Sim_Conso_Totale_MWh'].sum()
+                    pc_c = ((t_sc - t_rc) / t_rc * 100) if t_rc > 0 else 0
+                    
+                    t_rp = df_analyse['Reel_Prod_Totale_MWh'].sum()
+                    t_sp = df_analyse['Sim_Prod_Totale_MWh'].sum()
+                    pc_p = ((t_sp - t_rp) / t_rp * 100) if t_rp > 0 else 0
+                    
+                    t_re = df_analyse['Reel_Conso_Partagee_MWh'].sum()
+                    t_se = df_analyse['Sim_Conso_Partagee_MWh'].sum()
+                    pc_e = ((t_se - t_re) / t_re * 100) if t_re > 0 else 0
+                    
+                    # 5. Valeurs simulées ajoutées à côté des pourcentages annuels
+                    col_a1.metric("⚡ Total Consommé (Cumulé)", f"{t_rc:.2f} MWh", f"{pc_c:+.1f}% (Simu: {t_sc:.2f})", delta_color="off")
+                    col_a2.metric("☀️ Total Produit (Cumulé)", f"{t_rp:.2f} MWh", f"{pc_p:+.1f}% (Simu: {t_sp:.2f})", delta_color="off")
+                    col_a3.metric("🤝 Total Échangé (Cumulé)", f"{t_re:.2f} MWh", f"{pc_e:+.1f}% (Simu: {t_se:.2f})", delta_color="off")
+                    
                     st.divider()
 
-                    # SÉLECTEUR DE VUE
-                    st.subheader("📈 Visualisation Détaillée")
-                    choix_kpi = st.radio("Sélectionnez l'indicateur à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
+                    # 2. MENU INTERACTIF GLOBAL
+                    st.subheader("📈 Visualisation Détaillée Globale")
+                    choix_kpi_global = st.radio("Sélectionnez l'indicateur global à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
                     
-                    if choix_kpi == "⚡ Consommation":
+                    if choix_kpi_global == "⚡ Consommation":
                         col_r, col_s, col_err = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh'
-                    elif choix_kpi == "☀️ Production":
+                    elif choix_kpi_global == "☀️ Production":
                         col_r, col_s, col_err = 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 'Erreur_Prod_MWh'
                     else:
                         col_r, col_s, col_err = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', 'Erreur_Partage_MWh'
 
-                    # TENDANCE GLOBALE CHRONOLOGIQUE
-                    st.markdown(f"**Saisonnalité Globale : {choix_kpi.split(' ')[1]}**")
+                    st.markdown(f"**Saisonnalité : {choix_kpi_global.split(' ')[1]}**")
                     df_trend_data = df_analyse[df_analyse['Has_Facture'] == True]
                     df_trend = df_trend_data.groupby(['Sort_Key', 'Periode_Str'])[[col_r, col_s]].sum().reset_index()
                     
                     fig_trend, ax_trend = plt.subplots(figsize=(12, 4))
                     ax_trend.plot(df_trend['Periode_Str'], df_trend[col_r], marker='o', color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
                     ax_trend.plot(df_trend['Periode_Str'], df_trend[col_s], marker='x', color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
-                    ax_trend.set_ylabel('MWh'); ax_trend.legend(); st.pyplot(fig_trend)
+                    ax_trend.set_ylabel('MWh')
+                    ax_trend.legend()
+                    st.pyplot(fig_trend)
                     
-                    # HEATMAP ARC-EN-CIEL (MWh)
-                    st.markdown(f"**Heatmap des Écarts (MWh) : {choix_kpi.split(' ')[1]}**")
+                    # 4. HEATMAP ARC-EN-CIEL
+                    st.markdown(f"**Écarts (MWh) par Membre : {choix_kpi_global.split(' ')[1]}**")
                     st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
                     
                     df_analyse['Erreur_Heatmap'] = np.where(df_analyse['Has_Facture'], df_analyse[col_err], np.nan)
@@ -583,38 +524,69 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     colonnes_ordonnees = df_analyse[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')['Periode_Str'].tolist()
                     pivot_heat = pivot_heat.reindex(columns=colonnes_ordonnees)
                     
+                    # Palette personnalisée (Violet -> Bleu -> Vert(0) -> Jaune -> Orange -> Rouge)
                     colors_custom = ['#8e44ad', '#2c3e50', '#2980b9', '#27ae60', '#f1c40f', '#e67e22', '#c0392b']
                     cmap_custom = LinearSegmentedColormap.from_list("custom_error", colors_custom)
 
                     fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
                     ax_heat.set_facecolor('#ecf0f1') 
                     sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
-                    ax_heat.set_ylabel(''); ax_heat.set_xlabel(''); st.pyplot(fig_heat)
+                    ax_heat.set_ylabel('')
+                    ax_heat.set_xlabel('')
+                    st.pyplot(fig_heat)
+                    
                     st.divider()
 
-                    # PROFIL INDIVIDUEL ZOOMÉ
-                    st.subheader("👤 Profil Individuel")
+                    # 3. PROFIL INDIVIDUEL ZOOMÉ (Et Boutons Intelligents)
+                    st.subheader("👤 Analyse Individuelle")
                     membre_choisi = st.selectbox("Sélectionnez un membre :", sorted(df_analyse['Proprietaire'].unique()))
                     
-                    # Filtre exclusif : on ne garde que les mois où le membre est bien facturé !
+                    # On filtre et on retire d'office les mois où le membre n'a pas de facture (Zoom)
                     df_indiv = df_analyse[(df_analyse['Proprietaire'] == membre_choisi) & (df_analyse['Has_Facture'] == True)].sort_values('Sort_Key')
                     
                     if not df_indiv.empty:
+                        # Logique des boutons intelligents (on cache la prod si réelle ET simulée sont à 0)
+                        has_conso = (df_indiv['Reel_Conso_Totale_MWh'].sum() > 0) or (df_indiv['Sim_Conso_Totale_MWh'].sum() > 0)
+                        has_prod = (df_indiv['Reel_Prod_Totale_MWh'].sum() > 0) or (df_indiv['Sim_Prod_Totale_MWh'].sum() > 0)
+                        
+                        options_indiv = []
+                        if has_conso:
+                            options_indiv.extend(["⚡ Conso Totale", "🤝 Conso Partagée"])
+                        if has_prod:
+                            options_indiv.extend(["☀️ Prod Totale", "🤝 Prod Partagée"])
+                            
+                        # Sécurité au cas où tout serait à 0
+                        if not options_indiv:
+                            options_indiv = ["⚡ Conso Totale"]
+                            
+                        choix_kpi_indiv = st.radio(f"Indicateur pour {membre_choisi} :", options_indiv, horizontal=True)
+                        
+                        if choix_kpi_indiv == "⚡ Conso Totale":
+                            c_r, c_s = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh'
+                        elif choix_kpi_indiv == "☀️ Prod Totale":
+                            c_r, c_s = 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh'
+                        elif choix_kpi_indiv == "🤝 Conso Partagée":
+                            c_r, c_s = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh'
+                        else:
+                            c_r, c_s = 'Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh'
+                        
                         col_i1, col_i2 = st.columns([1, 2])
-                        tot_i_r = df_indiv[col_r].sum()
-                        err_i_p = ((df_indiv[col_s].sum() - tot_i_r) / tot_i_r * 100) if tot_i_r > 0 else 0
-                        col_i1.metric(f"Bilan {choix_kpi.split(' ')[1]}", f"{tot_i_r:.2f} MWh", f"{err_i_p:+.1f}% simulé", delta_color="off")
+                        tot_i_r = df_indiv[c_r].sum()
+                        err_i_p = ((df_indiv[c_s].sum() - tot_i_r) / tot_i_r * 100) if tot_i_r > 0 else 0
+                        
+                        col_i1.metric(f"Bilan Annuel", f"{tot_i_r:.2f} MWh", f"{err_i_p:+.1f}% simulé", delta_color="off")
                         
                         fig_indiv, ax_indiv = plt.subplots(figsize=(8, 4))
-                        ax_indiv.plot(df_indiv['Periode_Str'], df_indiv[col_r], marker='o', color='#9b59b6', label='Réalité')
-                        ax_indiv.plot(df_indiv['Periode_Str'], df_indiv[col_s], marker='x', color='#f1c40f', linestyle='--', label='Simulation')
-                        ax_indiv.set_ylabel('MWh'); ax_indiv.legend(); col_i2.pyplot(fig_indiv)
+                        ax_indiv.plot(df_indiv['Periode_Str'], df_indiv[c_r], marker='o', color='#9b59b6', linewidth=2, label='Réalité')
+                        ax_indiv.plot(df_indiv['Periode_Str'], df_indiv[c_s], marker='x', color='#f1c40f', linestyle='--', linewidth=2, label='Simulation')
+                        ax_indiv.set_ylabel('MWh')
+                        ax_indiv.legend()
+                        col_i2.pyplot(fig_indiv)
                     else:
-                        st.info("Ce membre n'a aucune donnée de facture pour cet indicateur.")
-
+                        st.info("Ce membre n'a aucune facture enregistrée sur la période sélectionnée.")
 
                 # =================================================================================================
-                # 📥 TÉLÉCHARGEMENT COMMUN (VALABLE POUR LES DEUX MODES)
+                # 📥 TÉLÉCHARGEMENT COMMUN
                 # =================================================================================================
                 st.divider()
                 st.subheader("📋 Base de Données Complète")
