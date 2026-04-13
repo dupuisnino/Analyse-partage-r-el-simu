@@ -514,27 +514,32 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax_trend.legend()
                     st.pyplot(fig_trend)
                     
-                    # 4. HEATMAP ARC-EN-CIEL
-                    st.markdown(f"**Écarts (MWh) par Membre : {choix_kpi_global.split(' ')[1]}**")
+                    # HEATMAP ARC-EN-CIEL (MWh)
+                    st.markdown(f"**Heatmap des Écarts (MWh) : {choix_kpi.split(' ')[1]}**")
                     st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
                     
-                    df_analyse['Erreur_Heatmap'] = np.where(df_analyse['Has_Facture'], df_analyse[col_err], np.nan)
-                    pivot_heat = df_analyse.pivot(index='Proprietaire', columns='Periode_Str', values='Erreur_Heatmap')
+                    # NOUVEAU : On exclut les "purs consommateurs" ou "purs producteurs" selon le choix
+                    membres_kpi = df_analyse.groupby('Proprietaire')[[col_r, col_s]].sum()
+                    membres_utiles = membres_kpi[(membres_kpi[col_r] > 0) | (membres_kpi[col_s] > 0)].index
+                    df_heat = df_analyse[df_analyse['Proprietaire'].isin(membres_utiles)].copy()
                     
-                    colonnes_ordonnees = df_analyse[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')['Periode_Str'].tolist()
+                    df_heat['Erreur_Heatmap'] = np.where(df_heat['Has_Facture'], df_heat[col_err], np.nan)
+                    pivot_heat = df_heat.pivot(index='Proprietaire', columns='Periode_Str', values='Erreur_Heatmap')
+                    
+                    colonnes_ordonnees = df_heat[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')['Periode_Str'].tolist()
                     pivot_heat = pivot_heat.reindex(columns=colonnes_ordonnees)
                     
-                    # Palette personnalisée (Violet -> Bleu -> Vert(0) -> Jaune -> Orange -> Rouge)
                     colors_custom = ['#8e44ad', '#2c3e50', '#2980b9', '#27ae60', '#f1c40f', '#e67e22', '#c0392b']
                     cmap_custom = LinearSegmentedColormap.from_list("custom_error", colors_custom)
 
-                    fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
-                    ax_heat.set_facecolor('#ecf0f1') 
-                    sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
-                    ax_heat.set_ylabel('')
-                    ax_heat.set_xlabel('')
-                    st.pyplot(fig_heat)
-                    
+                    # Si le tableau n'est pas vide après filtrage
+                    if not pivot_heat.empty:
+                        fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
+                        ax_heat.set_facecolor('#ecf0f1') 
+                        sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
+                        ax_heat.set_ylabel(''); ax_heat.set_xlabel(''); st.pyplot(fig_heat)
+                    else:
+                        st.info(f"Aucun membre n'a de données de {choix_kpi.split(' ')[1]} sur cette période.")
                     st.divider()
 
                     # 3. PROFIL INDIVIDUEL ZOOMÉ (Et Boutons Intelligents)
