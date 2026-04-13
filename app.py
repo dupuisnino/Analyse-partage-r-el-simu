@@ -13,7 +13,7 @@ sns.set_theme(style="whitegrid")
 st.title("⚡ Audit Automatique : Réalité vs Simulation")
 st.markdown("Importez les 4 fichiers ci-dessous pour lancer l'analyse globale et détaillée.")
 
-# ==========================================
+# =========================================
 # BARRE LATÉRALE : UPLOADS & PARAMÈTRES
 # ==========================================
 st.sidebar.markdown("### Choix de l'Analyse")
