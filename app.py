@@ -514,8 +514,8 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax_trend.legend()
                     st.pyplot(fig_trend)
                     
-                    # HEATMAP ARC-EN-CIEL (MWh)
-                    st.markdown(f"**Heatmap des Écarts (MWh) : {choix_kpi.split(' ')[1]}**")
+                    # 4. HEATMAP ARC-EN-CIEL (MWh)
+                    st.markdown(f"**Écarts (MWh) par Membre : {choix_kpi_global.split(' ')[1]}**")
                     st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
                     
                     # NOUVEAU : On exclut les "purs consommateurs" ou "purs producteurs" selon le choix
@@ -529,19 +529,22 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     colonnes_ordonnees = df_heat[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')['Periode_Str'].tolist()
                     pivot_heat = pivot_heat.reindex(columns=colonnes_ordonnees)
                     
+                    # Palette personnalisée (Violet -> Bleu -> Vert(0) -> Jaune -> Orange -> Rouge)
                     colors_custom = ['#8e44ad', '#2c3e50', '#2980b9', '#27ae60', '#f1c40f', '#e67e22', '#c0392b']
                     cmap_custom = LinearSegmentedColormap.from_list("custom_error", colors_custom)
 
-                    # Si le tableau n'est pas vide après filtrage
                     if not pivot_heat.empty:
                         fig_heat, ax_heat = plt.subplots(figsize=(14, max(4, len(pivot_heat)*0.4)))
                         ax_heat.set_facecolor('#ecf0f1') 
                         sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
-                        ax_heat.set_ylabel(''); ax_heat.set_xlabel(''); st.pyplot(fig_heat)
+                        ax_heat.set_ylabel('')
+                        ax_heat.set_xlabel('')
+                        st.pyplot(fig_heat)
                     else:
-                        st.info(f"Aucun membre n'a de données de {choix_kpi.split(' ')[1]} sur cette période.")
+                        st.info(f"Aucun membre n'a de données de {choix_kpi_global.split(' ')[1]} sur cette période.")
+                        
                     st.divider()
-
+                    
                     # 3. PROFIL INDIVIDUEL ZOOMÉ (Et Boutons Intelligents)
                     st.subheader("👤 Analyse Individuelle")
                     membre_choisi = st.selectbox("Sélectionnez un membre :", sorted(df_analyse['Proprietaire'].unique()))
