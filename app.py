@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
 from matplotlib.colors import LinearSegmentedColormap
+import io
 
 # Configuration de la page web
 st.set_page_config(page_title="Audit Communauté d'Énergie", page_icon="⚡", layout="wide")
@@ -82,9 +82,9 @@ if first_facture:
     # NOUVEAU : Extraction automatique du mois d'après la première ligne de la facture
     if col_date_sel != "--- À sélectionner ---":
         try:
-            fichier_factures.seek(0)
-            df_dates = pd.read_excel(fichier_factures, nrows=5) # On lit juste les 5 premières lignes
-            fichier_factures.seek(0) # On remet le fichier à zéro pour la suite
+            first_facture.seek(0)
+            df_dates = pd.read_excel(first_facture, nrows=5) # On lit juste les 5 premières lignes
+            first_facture.seek(0) # On remet le fichier à zéro pour la suite
             
             premiere_date = df_dates[col_date_sel].dropna().iloc[0]
             mois_detecte = pd.to_datetime(premiere_date).month
@@ -389,30 +389,34 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     st.pyplot(fig_nuage)
     
                     st.divider()
-                    
-                    # ---------------------------------------------------------
-                    # TABLEAU DE DONNÉES ET TÉLÉCHARGEMENT (Sur df_comparatif complet)
-                    # ---------------------------------------------------------
-                    st.subheader("📋 Tableau récapitulatif (Tous les membres)")
-                    colonnes_a_retirer = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%']
-                    df_affichage = df_comparatif.drop(columns=colonnes_a_retirer)
-                    st.dataframe(df_affichage, use_container_width=True)
-                    
-                    csv = df_affichage.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
-                    st.download_button(
-                        label="📥 Télécharger le rapport complet pour Excel",
-                        data=csv,
-                        file_name=f"Audit_Comparaison_Mois_{mois_cible}.csv",
-                        mime="text/csv",
-                        type="primary"
-                    )
-               # =================================================================================================
-                # 🔵🔵🔵 MODE ANNUEL (TOTALEMENT ISOLÉ) 🔵🔵🔵
+
+                # =================================================================================================
+                # 🔵🔵🔵 MODE ANNUEL (Saisonnalité & Bilan interactif)
                 # =================================================================================================
                 else:
-                    # =========================================================
-                    # 🔵 MODE ANNUEL (Saisonnalité & Bilan)
-                    # =========================================================
+                    # --- 1. MAPPING ---
+                    df_mapping = pd.read_excel(fichier_mapping)
+                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
+                    df_mapping = df_mapping.explode('Nom_Streamlit')
+                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
+                    df_mapping = df_mapping.explode('Nom_Reel')
+                    df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].str.strip()
+                    df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].str.strip()
+                    count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
+                    df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
+                    mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
+                    mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
+
+                    # --- 2. CONTACTS ---
+                    df_contacts = pd.read_excel(fichier_contacts, dtype=str)
+                    est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
+                    df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
+                    df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
+                    df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
+                    df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+                    df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
+
+                    # --- 3. TOUS LES FICHIERS SIBELGA ---
                     df_reels_list = []
                     for fact in fichier_factures:
                         fact.seek(0)
@@ -435,12 +439,13 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         if not all([c_date, c_ean, c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]):
                             continue 
 
-                        # --- NOUVEAU : GESTION TEMPORELLE CHRONOLOGIQUE ---
+                        # Extraction Année et Mois chronologique
                         premiere_date = pd.to_datetime(df_r[c_date].dropna().iloc[0])
                         m_encours = premiere_date.month
                         y_encours = premiere_date.year
                         
                         df_r[c_ean] = df_r[c_ean].astype(str).str.replace(' ','').str.replace(r'\.0$','',regex=True).str.strip()
+                        
                         for c in [c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]:
                             if df_r[c].dtype == object: df_r[c] = df_r[c].astype(str).str.replace(',', '.')
                             df_r[c] = pd.to_numeric(df_r[c], errors='coerce').fillna(0)
@@ -456,10 +461,9 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
                         df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée (kWh)'] / 1000.0
                         df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée (kWh)'] + df_c['Injection Résiduelle (kWh)']) / 1000.0
-                        
                         df_c['Mois'] = m_encours
                         df_c['Annee'] = y_encours
-                        df_c['Sort_Key'] = y_encours * 100 + m_encours # Tri chronologique exact
+                        df_c['Sort_Key'] = y_encours * 100 + m_encours # Pour le tri temporel absolu
                         df_reels_list.append(df_c)
 
                     if not df_reels_list:
@@ -469,9 +473,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_reels_all = pd.concat(df_reels_list)
                     df_reels_final = df_reels_all.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                    # Mémorisation des clés pour la simulation
+                    # On mémorise la clé de tri par mois pour la simulation
                     mois_annee_map = df_reels_all[['Mois', 'Annee', 'Sort_Key']].drop_duplicates().set_index('Mois')
 
+                    # --- 4. SIMULATION STREAMLIT SUR LES MOIS PRESENTS ---
                     df_s = pd.read_csv(fichier_simu)
                     df_s['Mois_Simu'] = pd.to_datetime(df_s['Unnamed: 0']).dt.month
                     mois_presents = df_reels_all['Mois'].unique().tolist()
@@ -496,7 +501,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                     df_sim_final = df_sim_agg.groupby(['Proprietaire', 'Mois'])[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
-                    # --- FUSION ANNUELLE ---
+                    # --- 5. FUSION ANNUELLE ---
                     df_comparatif = pd.merge(df_reels_final, df_sim_final, on=['Proprietaire', 'Mois'], how='outer', indicator=True)
                     df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
                     df_comparatif['Has_Facture'] = df_comparatif['_merge'].isin(['both', 'left_only'])
@@ -521,18 +526,17 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         st.success("✅ Bases de données alignées sur toute l'année !")
 
                     df_comparatif = df_comparatif.drop(columns=['_merge']).fillna(0)
-                    
                     df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                     df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                     df_comparatif['Erreur_Partage_MWh'] = df_comparatif['Sim_Conso_Partagee_MWh'] - df_comparatif['Reel_Conso_Partagee_MWh']
-
+                    
                     df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_jamais_fact)].copy()
                     
                     noms_mois = {1:'Jan', 2:'Fév', 3:'Mar', 4:'Avr', 5:'Mai', 6:'Juin', 7:'Juil', 8:'Août', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Déc'}
                     df_analyse['Periode_Str'] = df_analyse['Mois'].map(noms_mois) + " '" + df_analyse['Annee'].astype(int).astype(str).str[-2:]
                     df_analyse = df_analyse.sort_values('Sort_Key')
 
-                    # --- GRAPHIQUES ANNUELS ---
+                    # --- 6. GRAPHIQUES ANNUELS ---
                     st.divider()
                     st.subheader("🌍 Bilan Annuel Global")
                     col_a1, col_a2, col_a3 = st.columns(3)
@@ -548,6 +552,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     col_a3.metric("🤝 Total Échangé (Cumulé)", f"{t_re:.2f} MWh", f"{pc_e:+.1f}% (Simu: {df_analyse['Sim_Conso_Partagee_MWh'].sum():.2f})", delta_color="off")
                     st.divider()
 
+                    # SÉLECTEUR DE VUE
                     st.subheader("📈 Visualisation Détaillée")
                     choix_kpi = st.radio("Sélectionnez l'indicateur à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
                     
@@ -558,6 +563,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     else:
                         col_r, col_s, col_err = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', 'Erreur_Partage_MWh'
 
+                    # TENDANCE GLOBALE CHRONOLOGIQUE
                     st.markdown(f"**Saisonnalité Globale : {choix_kpi.split(' ')[1]}**")
                     df_trend_data = df_analyse[df_analyse['Has_Facture'] == True]
                     df_trend = df_trend_data.groupby(['Sort_Key', 'Periode_Str'])[[col_r, col_s]].sum().reset_index()
@@ -567,6 +573,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax_trend.plot(df_trend['Periode_Str'], df_trend[col_s], marker='x', color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
                     ax_trend.set_ylabel('MWh'); ax_trend.legend(); st.pyplot(fig_trend)
                     
+                    # HEATMAP ARC-EN-CIEL (MWh)
                     st.markdown(f"**Heatmap des Écarts (MWh) : {choix_kpi.split(' ')[1]}**")
                     st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
                     
@@ -585,9 +592,11 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     ax_heat.set_ylabel(''); ax_heat.set_xlabel(''); st.pyplot(fig_heat)
                     st.divider()
 
+                    # PROFIL INDIVIDUEL ZOOMÉ
                     st.subheader("👤 Profil Individuel")
                     membre_choisi = st.selectbox("Sélectionnez un membre :", sorted(df_analyse['Proprietaire'].unique()))
                     
+                    # Filtre exclusif : on ne garde que les mois où le membre est bien facturé !
                     df_indiv = df_analyse[(df_analyse['Proprietaire'] == membre_choisi) & (df_analyse['Has_Facture'] == True)].sort_values('Sort_Key')
                     
                     if not df_indiv.empty:
@@ -602,19 +611,20 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         ax_indiv.set_ylabel('MWh'); ax_indiv.legend(); col_i2.pyplot(fig_indiv)
                     else:
                         st.info("Ce membre n'a aucune donnée de facture pour cet indicateur.")
+
+
                 # =================================================================================================
                 # 📥 TÉLÉCHARGEMENT COMMUN (VALABLE POUR LES DEUX MODES)
                 # =================================================================================================
                 st.divider()
                 st.subheader("📋 Base de Données Complète")
-                cols_to_drop = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%']
-                if 'Has_Facture' in df_comparatif.columns: cols_to_drop.append('Has_Facture')
+                cols_to_drop = ['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%', 'Sort_Key', 'Periode_Str', 'Has_Facture', 'Erreur_Heatmap']
                 
-                df_affichage = df_comparatif.drop(columns=cols_to_drop, errors='ignore')
+                df_affichage = df_comparatif.drop(columns=[c for c in cols_to_drop if c in df_comparatif.columns], errors='ignore')
                 st.dataframe(df_affichage, use_container_width=True)
                 
                 csv = df_affichage.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
-                nom_fichier = f"Audit_Mois_{mois_cible}.csv" if mode_analyse == "📅 Mensuel (Contrôle)" else "Audit_Annuel_Global.csv"
+                nom_fichier = f"Audit_Mois_{mois_cible}.csv" if "Mensuel" in mode_analyse else "Audit_Annuel_Global.csv"
                 
                 st.download_button(
                     label="📥 Télécharger le rapport complet pour Excel",
@@ -628,4 +638,4 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.error(f"❌ Une erreur s'est produite lors de l'analyse : {e}")
 
 else:
-    st.info("👈 Veuillez importer les 4 fichiers Excel/CSV dans le menu de gauche pour démarrer.")
+    st.info("👈 Veuillez choisir un mode d'analyse et importer les fichiers dans le menu de gauche pour démarrer.")
