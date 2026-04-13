@@ -21,7 +21,7 @@ mode_analyse = st.sidebar.radio("Type de rapport :", ["📅 Mensuel (Contrôle)"
 st.sidebar.divider()
 
 st.sidebar.header("📁 1. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel)", type=['xlsx'])
 
 # L'upload Sibelga change selon le mode choisi !
 if "Mensuel" in mode_analyse:
