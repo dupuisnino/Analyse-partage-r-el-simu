@@ -211,29 +211,37 @@ if st.session_state.get('calcul_termine', False):
     col_choix1, col_choix2 = st.columns([1, 2])
     vue_choisie = col_choix1.radio("Sélectionnez le mode d'exploration :", ["📆 Vue Globale / Annuelle", "📅 Vue Mensuelle (Détail)"], index=0)
 
-    # =========================================================
+   # =========================================================
     # 📅 VUE MENSUELLE (Filtrage sur 1 mois)
     # =========================================================
     if vue_choisie == "📅 Vue Mensuelle (Détail)":
         periodes_dispos = df_analyse[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')
         mois_cible_str = col_choix2.selectbox("Sélectionnez le mois à analyser en détail :", periodes_dispos['Periode_Str'].tolist())
         
-        # Filtrage
-        df_mensuel = df_analyse[df_analyse['Periode_Str'] == mois_cible_str].copy()
+        # CORRECTION 1 : On exclut les membres qui n'ont pas de vraie facture sur CE mois précis
+        df_mensuel = df_analyse[(df_analyse['Periode_Str'] == mois_cible_str) & (df_analyse['Has_Facture'] == True)].copy()
         
         st.divider()
         st.subheader(f"🌍 Analyse Globale ({mois_cible_str})")
         col_m1, col_m2, col_m3 = st.columns(3)
-        tot_r_conso = df_mensuel['Reel_Conso_Totale_MWh'].sum()
-        pct_conso = ((df_mensuel['Sim_Conso_Totale_MWh'].sum() - tot_r_conso) / tot_r_conso * 100) if tot_r_conso > 0 else 0
-        tot_r_prod = df_mensuel['Reel_Prod_Totale_MWh'].sum()
-        pct_prod = ((df_mensuel['Sim_Prod_Totale_MWh'].sum() - tot_r_prod) / tot_r_prod * 100) if tot_r_prod > 0 else 0
-        tot_r_ech = df_mensuel['Reel_Conso_Partagee_MWh'].sum()
-        pct_ech = ((df_mensuel['Sim_Conso_Partagee_MWh'].sum() - tot_r_ech) / tot_r_ech * 100) if tot_r_ech > 0 else 0
         
-        col_m1.metric("⚡ Total Consommé", f"{tot_r_conso:.2f} MWh", f"{pct_conso:+.1f}% d'erreur", delta_color="off")
-        col_m2.metric("☀️ Total Produit", f"{tot_r_prod:.2f} MWh", f"{pct_prod:+.1f}% d'erreur", delta_color="off")
-        col_m3.metric("🤝 Total Échangé", f"{tot_r_ech:.2f} MWh", f"{pct_ech:+.1f}% d'erreur", delta_color="off")
+        # Calculs complets pour inclure les valeurs simulées
+        tot_r_conso = df_mensuel['Reel_Conso_Totale_MWh'].sum()
+        tot_s_conso = df_mensuel['Sim_Conso_Totale_MWh'].sum()
+        pct_conso = ((tot_s_conso - tot_r_conso) / tot_r_conso * 100) if tot_r_conso > 0 else 0
+        
+        tot_r_prod = df_mensuel['Reel_Prod_Totale_MWh'].sum()
+        tot_s_prod = df_mensuel['Sim_Prod_Totale_MWh'].sum()
+        pct_prod = ((tot_s_prod - tot_r_prod) / tot_r_prod * 100) if tot_r_prod > 0 else 0
+        
+        tot_r_ech = df_mensuel['Reel_Conso_Partagee_MWh'].sum()
+        tot_s_ech = df_mensuel['Sim_Conso_Partagee_MWh'].sum()
+        pct_ech = ((tot_s_ech - tot_r_ech) / tot_r_ech * 100) if tot_r_ech > 0 else 0
+        
+        # CORRECTION 2 : Ajout des (Simu: X) à côté des pourcentages
+        col_m1.metric("⚡ Total Consommé", f"{tot_r_conso:.2f} MWh", f"{pct_conso:+.1f}% (Simu: {tot_s_conso:.2f})", delta_color="off")
+        col_m2.metric("☀️ Total Produit", f"{tot_r_prod:.2f} MWh", f"{pct_prod:+.1f}% (Simu: {tot_s_prod:.2f})", delta_color="off")
+        col_m3.metric("🤝 Total Échangé", f"{tot_r_ech:.2f} MWh", f"{pct_ech:+.1f}% (Simu: {tot_s_ech:.2f})", delta_color="off")
         
         st.divider()
         st.subheader("📉 Pire dimensionnement (MWh)")
