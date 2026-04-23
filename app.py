@@ -16,87 +16,12 @@ st.markdown("Importez vos fichiers, lancez l'analyse, puis explorez les résulta
 # ==========================================
 # 1. BARRE LATÉRALE : UPLOADS UNIQUEMENT
 # ==========================================
-st.sidebar.markdown("### Choix de l'Analyse")
-mode_analyse = st.sidebar.radio("Type de rapport :", ["📅 Mensuel (Contrôle)", "📆 Annuel (Bilan)"])
-st.sidebar.divider()
-
 st.sidebar.header("📁 1. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel)", type=['xlsx'])
-
-# L'upload Sibelga change selon le mode choisi !
-if "Mensuel" in mode_analyse:
-    fichier_factures = st.sidebar.file_uploader("2. Fichier Sibelga (Excel)", type=['xlsx'])
-else:
-    fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez les 12 mois)", type=['xlsx'], accept_multiple_files=True)
-
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
+# On accepte toujours plusieurs fichiers Sibelga !
+fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez 1 ou plusieurs mois)", type=['xlsx'], accept_multiple_files=True)
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
-
-
-# ==========================================
-# VERIFICATION DES COLONNES SIBELGA & MOIS
-# ==========================================
-col_ean_sel, col_vol_part_sel, col_vol_comp_sel, col_inj_part_sel, col_inj_comp_sel, col_date_sel = None, None, None, None, None, None
-mois_detecte = None
-
-# On isole le premier fichier pour éviter le plantage
-first_facture = None
-if fichier_factures:
-    first_facture = fichier_factures[0] if isinstance(fichier_factures, list) else fichier_factures
-
-if first_facture:
-    st.sidebar.header("🔧 2. Vérification des colonnes")
-    st.sidebar.markdown("*L'outil a pré-sélectionné les colonnes Sibelga. Corrigez-les si nécessaire.*")
-    
-    first_facture.seek(0)
-    df_cols = pd.read_excel(first_facture, nrows=0)
-    first_facture.seek(0)
-    
-    colonnes_sibelga = df_cols.columns.tolist()
-    options_colonnes = ["--- À sélectionner ---"] + colonnes_sibelga
-    
-    def trouver_colonne_index(options_mots_cles, mots_exclus):
-        for mots_cles in options_mots_cles:
-            for c in colonnes_sibelga:
-                c_norm = str(c).lower().replace('é', 'e').replace('è', 'e')
-                if all(m in c_norm for m in mots_cles) and not any(ex in c_norm for ex in mots_exclus):
-                    return options_colonnes.index(c)
-        return 0
-
-    idx_ean = trouver_colonne_index([['ean']], [])
-    idx_vol_part = trouver_colonne_index([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut', 'type', 'cle'])
-    idx_vol_comp = trouver_colonne_index([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm'], ['reseau', 'kwh']], ['injection', 'production', 'taux', 'statut', 'partage'])
-    idx_inj_part = trouver_colonne_index([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
-    idx_inj_comp = trouver_colonne_index([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'partage', 'consommation', 'consomm'])
-    
-    idx_date = trouver_colonne_index([['fromdate'], ['date', 'debut'], ['from', 'date'], ['periode', 'debut']], ['fin', 'to', 'todate'])
-
-    col_date_sel = st.sidebar.selectbox("Colonne Date (Début)", options_colonnes, index=idx_date)
-    col_ean_sel = st.sidebar.selectbox("Colonne EAN", options_colonnes, index=idx_ean)
-    col_vol_part_sel = st.sidebar.selectbox("Consommation Partagée", options_colonnes, index=idx_vol_part)
-    col_vol_comp_sel = st.sidebar.selectbox("Consommation Résiduelle/Réseau", options_colonnes, index=idx_vol_comp)
-    col_inj_part_sel = st.sidebar.selectbox("Injection Partagée", options_colonnes, index=idx_inj_part)
-    col_inj_comp_sel = st.sidebar.selectbox("Injection Résiduelle (Réseau)", options_colonnes, index=idx_inj_comp)
-
-    # Extraction automatique du mois d'après la première ligne de la facture (Utile pour le mode mensuel)
-    if col_date_sel != "--- À sélectionner ---":
-        try:
-            first_facture.seek(0)
-            df_dates = pd.read_excel(first_facture, nrows=5)
-            first_facture.seek(0) 
-            
-            premiere_date = df_dates[col_date_sel].dropna().iloc[0]
-            mois_detecte = pd.to_datetime(premiere_date).month
-        except Exception:
-            pass
-
-if "Mensuel" in mode_analyse:
-    st.sidebar.header("📅 3. Paramètres")
-    index_defaut_mois = (mois_detecte - 1) if mois_detecte else 1
-    mois_cible = st.sidebar.selectbox("Mois à analyser", range(1, 13), index=index_defaut_mois, format_func=lambda x: ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'][x-1])
-
-    if mois_detecte:
-        st.sidebar.success("✅ Mois détecté automatiquement d'après la facture Sibelga !")
 
 
 # ==========================================
@@ -245,6 +170,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
+                # NOUVEAU: Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -390,6 +316,7 @@ if st.session_state.get('calcul_termine', False):
         st.subheader("📈 Visualisation Détaillée Globale")
         choix_kpi_global = st.radio("Sélectionnez l'indicateur global à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
         
+        # NOUVEAU: Récupération des 4 colonnes (R, S, Err_MWh, Err_Pct)
         if choix_kpi_global == "⚡ Consommation":
             col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh', 'Erreur_Conso_%'
         elif choix_kpi_global == "☀️ Production":
