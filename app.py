@@ -214,6 +214,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.session_state['df_comparatif'] = df_comparatif
                 st.session_state['df_analyse'] = df_analyse
                 st.session_state['alertes'] = alertes
+                
+                # --- CORRECTION : Sauvegarde des données pour l'Éditeur de Mapping ---
+                st.session_state['simu_sans_map'] = list(simu_sans_map)
+                st.session_state['fact_jamais_sim'] = list(fact_jamais_sim)
+                st.session_state['df_contacts_ref'] = df_contacts[['Groupe_Odoo', 'Nom', 'Ean']].copy()
+                
                 st.session_state['calcul_termine'] = True
 
             except Exception as e:
