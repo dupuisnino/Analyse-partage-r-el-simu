@@ -45,6 +45,9 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # Si c'est un nouveau lancement, on lit le fichier. Si c'est un recalcul, on lit le mapping édité.
                 if 'custom_mapping' not in st.session_state or btn_lancer:
                     df_mapping_raw = pd.read_excel(fichier_mapping)
+                    # Création de la colonne de critère si elle n'existe pas dans l'Excel uploadé
+                    if 'Critère de liaison' not in df_mapping_raw.columns:
+                        df_mapping_raw['Critère de liaison'] = "Contrat d'énergie"
                     st.session_state['custom_mapping'] = df_mapping_raw
                 else:
                     df_mapping_raw = st.session_state['custom_mapping']
@@ -59,8 +62,14 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
                 df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
+                
                 mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
-                mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
+                
+                # NOUVEAU : Création de 3 dictionnaires de mapping distincts selon le critère choisi
+                mapping_ean = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Super_Groupe']))
+                mapping_epo = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Super_Groupe']))
+                mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
+                mapping_groupe = dict(zip(df_mapping[mask_groupe]['Nom_Reel'], df_mapping[mask_groupe]['Super_Groupe']))
 
                 df_contacts = pd.read_excel(fichier_contacts, dtype=str)
                 est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
@@ -70,7 +79,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
                 
-                # Formatage de l'Entry Point Owner s'il existe
                 if 'Entry Point Owner' in df_contacts.columns:
                     df_contacts['Entry Point Owner'] = df_contacts['Entry Point Owner'].astype(str).replace(['nan', 'NaN'], np.nan).str.strip()
 
@@ -117,15 +125,15 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_c = pd.merge(df_agg, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
                     df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Inconnu")
                     
-                    # Mapping en cascade (EAN > Entry Point Owner > Groupe_Odoo par défaut)
-                    df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_reel)
+                    # NOUVEAU : Mapping chirurgical. On applique les dicos respectifs.
+                    df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_ean)
                     if 'Entry Point Owner' in df_c.columns:
-                        df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_reel)
+                        df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_epo)
                     else:
                         df_c['Mapped_EPO'] = np.nan
-                    df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_reel)
+                    df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
                     
-                    # Le premier qui trouve une correspondance l'emporte, sinon on garde le nom par défaut
+                    # Cascade : L'EAN a priorité, puis EPO, puis Groupe, puis on garde le nom Odoo par défaut
                     df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
                     
                     df_c['Reel_Conso_Partagee_MWh'] = df_c['Volume Partagé (kWh)'] / 1000.0
@@ -182,7 +190,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
 
-                # ALERTES (Stockées pour affichage ultérieur)
+                # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
                 alertes = []
                 inconnus = df_reels_all[df_reels_all['Prop_Odoo'] == 'Inconnu']['EAN'].unique()
                 if len(inconnus) > 0: alertes.append(("error", f"**ALERTE ODOO (EAN facturés mais inconnus) :** {', '.join(inconnus)}"))
@@ -220,8 +228,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.session_state['df_comparatif'] = df_comparatif
                 st.session_state['df_analyse'] = df_analyse
                 st.session_state['alertes'] = alertes
-                
-                # --- Sauvegarde pour l'Éditeur de Mapping ---
                 st.session_state['simu_sans_map'] = list(simu_sans_map)
                 st.session_state['fact_jamais_sim'] = list(fact_jamais_sim)
                 
@@ -374,7 +380,7 @@ if st.session_state.get('calcul_termine', False):
         ax_trend.legend()
         st.pyplot(fig_trend, use_container_width=False)
         
-        # HEATMAP ARC-EN-CIEL
+        # HEATMAP ARC-EN-CIEL (MWh ou %)
         st.markdown("---")
         col_h1, col_h2 = st.columns([1, 1])
         with col_h1:
@@ -453,18 +459,18 @@ if st.session_state.get('calcul_termine', False):
             st.info("Ce membre n'a aucune facture enregistrée sur la période sélectionnée.")
 
     # =========================================================
-    # 🔗 ÉDITEUR DE MAPPING INTERACTIF
+    # 🔗 ÉDITEUR DE MAPPING INTERACTIF (AVEC CRITÈRE)
     # =========================================================
     elif vue_choisie == "🔗 Éditeur de Mapping":
         st.divider()
         st.subheader("🛠️ Éditeur de Correspondance (Mapping)")
-        st.markdown("Modifiez le tableau ci-dessous pour relier les membres simulés aux noms réels Odoo (EAN ou Entry Point Owner). Vous pouvez ajouter des lignes en cliquant en bas du tableau.")
+        st.markdown("Vous pouvez lier un nom de simulation à n'importe quel paramètre Odoo en modifiant le tableau ci-dessous.")
         
         col_hint1, col_hint2 = st.columns(2)
         with col_hint1:
             liste_simu = st.session_state.get('simu_sans_map', [])
             if liste_simu:
-                st.warning("**Noms Streamlit orphelins (À ajouter) :**\n\n" + ", ".join(liste_simu))
+                st.warning("**Noms Streamlit orphelins (À lier) :**\n\n" + ", ".join(liste_simu))
             else:
                 st.success("✅ Tous les membres de la simulation sont mappés.")
                 
@@ -475,14 +481,26 @@ if st.session_state.get('calcul_termine', False):
             else:
                 st.success("✅ Tous les compteurs facturés ont une simulation.")
 
-        # Affichage du dictionnaire Odoo pour aider l'utilisateur (Avec Entry Point Owner)
         with st.expander("Voir le référentiel des contacts Odoo (Pour copier-coller)"):
             st.dataframe(st.session_state['df_contacts_ref'], use_container_width=True)
 
-        # Éditeur interactif
-        edited_mapping = st.data_editor(st.session_state['custom_mapping'], num_rows="dynamic", use_container_width=True)
+        # Configuration de la nouvelle colonne de l'éditeur
+        col_config = {
+            "Critère de liaison": st.column_config.SelectboxColumn(
+                "Critère de liaison",
+                help="Où l'outil doit-il chercher ce nom dans Odoo ?",
+                options=["Contrat d'énergie", "Entry Point Owner", "EAN"],
+                required=True
+            )
+        }
+
+        edited_mapping = st.data_editor(
+            st.session_state['custom_mapping'], 
+            num_rows="dynamic", 
+            use_container_width=True,
+            column_config=col_config
+        )
         
-        # Bouton de Sauvegarde et de Relance
         if st.button("💾 Enregistrer le Mapping et Recalculer", type="primary"):
             st.session_state['custom_mapping'] = edited_mapping
             st.session_state['trigger_recalc'] = True
