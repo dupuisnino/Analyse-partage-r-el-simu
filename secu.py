@@ -170,6 +170,9 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
+                # NOUVEAU: Calcul de l'erreur en % pour le partage
+                df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
+                
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
                 df_comparatif['Abs_Erreur_Prod'] = df_comparatif['Erreur_Prod_MWh'].abs()
                 df_comparatif['Abs_Erreur_Conso_%'] = df_comparatif['Erreur_Conso_%'].abs()
@@ -313,12 +316,13 @@ if st.session_state.get('calcul_termine', False):
         st.subheader("📈 Visualisation Détaillée Globale")
         choix_kpi_global = st.radio("Sélectionnez l'indicateur global à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
         
+        # NOUVEAU: Récupération des 4 colonnes (R, S, Err_MWh, Err_Pct)
         if choix_kpi_global == "⚡ Consommation":
-            col_r, col_s, col_err = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh'
+            col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh', 'Erreur_Conso_%'
         elif choix_kpi_global == "☀️ Production":
-            col_r, col_s, col_err = 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 'Erreur_Prod_MWh'
+            col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 'Erreur_Prod_MWh', 'Erreur_Prod_%'
         else:
-            col_r, col_s, col_err = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', 'Erreur_Partage_MWh'
+            col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', 'Erreur_Partage_MWh', 'Erreur_Partage_%'
 
         # Largeur dynamique pour la tendance et la heatmap (pour scroller horizontalement si > 12 mois)
         n_mois = len(df_analyse['Sort_Key'].unique())
@@ -335,15 +339,25 @@ if st.session_state.get('calcul_termine', False):
         ax_trend.legend()
         st.pyplot(fig_trend, use_container_width=False)
         
-        # HEATMAP ARC-EN-CIEL (MWh)
-        st.markdown(f"**Écarts (MWh) par Membre : {choix_kpi_global.split(' ')[1]}**")
+        # HEATMAP ARC-EN-CIEL (MWh ou %)
+        st.markdown("---")
+        col_h1, col_h2 = st.columns([1, 1])
+        with col_h1:
+            st.markdown(f"**Écarts par Membre : {choix_kpi_global.split(' ')[1]}**")
+        with col_h2:
+            choix_unite_heatmap = st.radio("Unité de la Heatmap :", ["MWh", "Pourcentage (%)"], horizontal=True, label_visibility="collapsed")
+
         st.markdown("*Gris = Pas de facture Sibelga ce mois-là pour ce membre.*")
         
+        col_err_active = col_err_mwh if choix_unite_heatmap == "MWh" else col_err_pct
+        format_heat = ".2f" if choix_unite_heatmap == "MWh" else ".0f"
+        label_bar = "Erreur (MWh)" if choix_unite_heatmap == "MWh" else "Erreur (%)"
+
         membres_kpi = df_analyse.groupby('Proprietaire')[[col_r, col_s]].sum()
         membres_utiles = membres_kpi[(membres_kpi[col_r] > 0) | (membres_kpi[col_s] > 0)].index
         df_heat = df_analyse[df_analyse['Proprietaire'].isin(membres_utiles)].copy()
         
-        df_heat['Erreur_Heatmap'] = np.where(df_heat['Has_Facture'], df_heat[col_err], np.nan)
+        df_heat['Erreur_Heatmap'] = np.where(df_heat['Has_Facture'], df_heat[col_err_active], np.nan)
         pivot_heat = df_heat.pivot(index='Proprietaire', columns='Periode_Str', values='Erreur_Heatmap')
         colonnes_ordonnees = df_heat[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')['Periode_Str'].tolist()
         pivot_heat = pivot_heat.reindex(columns=colonnes_ordonnees)
@@ -354,7 +368,7 @@ if st.session_state.get('calcul_termine', False):
         if not pivot_heat.empty:
             fig_heat, ax_heat = plt.subplots(figsize=(fig_width, max(4, len(pivot_heat)*0.4)))
             ax_heat.set_facecolor('#ecf0f1') 
-            sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=".2f", ax=ax_heat, cbar_kws={'label': "Erreur (MWh)"}, linewidths=0.5)
+            sns.heatmap(pivot_heat, cmap=cmap_custom, center=0, annot=True, fmt=format_heat, ax=ax_heat, cbar_kws={'label': label_bar}, linewidths=0.5)
             ax_heat.set_ylabel('')
             ax_heat.set_xlabel('')
             st.pyplot(fig_heat, use_container_width=False)
