@@ -20,7 +20,7 @@ st.sidebar.header("📁 1. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 # On accepte toujours plusieurs fichiers Sibelga !
 fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez 1 ou plusieurs mois)", type=['xlsx'], accept_multiple_files=True)
-fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
+fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel 2 ou 3 colonnes)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 
@@ -45,9 +45,16 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 # Si c'est un nouveau lancement, on lit le fichier. Si c'est un recalcul, on lit le mapping édité.
                 if 'custom_mapping' not in st.session_state or btn_lancer:
                     df_mapping_raw = pd.read_excel(fichier_mapping)
-                    # Création de la colonne de critère si elle n'existe pas dans l'Excel uploadé
+                    
+                    # GESTION DU FICHIER A 3 COLONNES
                     if 'Critère de liaison' not in df_mapping_raw.columns:
+                        # Si l'utilisateur met un vieux fichier à 2 colonnes, on crée la 3ème
                         df_mapping_raw['Critère de liaison'] = "Contrat d'énergie"
+                    else:
+                        # S'il met un fichier à 3 colonnes, on bouche les trous potentiels pour éviter les crashs
+                        df_mapping_raw['Critère de liaison'] = df_mapping_raw['Critère de liaison'].fillna("Contrat d'énergie")
+                        df_mapping_raw['Critère de liaison'] = df_mapping_raw['Critère de liaison'].replace({"Contrat d'energie": "Contrat d'énergie"})
+                        
                     st.session_state['custom_mapping'] = df_mapping_raw
                 else:
                     df_mapping_raw = st.session_state['custom_mapping']
@@ -211,6 +218,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
+                # NOUVEAU: Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
