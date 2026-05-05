@@ -325,6 +325,7 @@ if st.session_state.get('calcul_termine', False):
             
         st.divider()
         st.subheader("📊 Vue globale : Réalité vs Simulation")
+        st.markdown("*point au dessus de la courbe = Surestimé par la simulation*")
         fig_nuage, axes = plt.subplots(2, 2, figsize=(16, 14))
         for idx, (col_r, col_s, title, color) in enumerate([('Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', '1. Conso Totale', '#3498db'), ('Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', '2. Prod Totale', '#2ecc71'), ('Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', '3. Conso Échangée', '#9b59b6'), ('Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh', '4. Prod Échangée', '#f1c40f')]):
             row, col = idx // 2, idx % 2
