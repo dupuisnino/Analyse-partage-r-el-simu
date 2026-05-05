@@ -20,7 +20,7 @@ st.sidebar.header("📁 1. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 # On accepte toujours plusieurs fichiers Sibelga !
 fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez 1 ou plusieurs mois)", type=['xlsx'], accept_multiple_files=True)
-fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel 2 ou 3 colonnes)", type=['xlsx'])
+fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 
