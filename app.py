@@ -291,6 +291,7 @@ if st.session_state.get('calcul_termine', False):
         
         st.divider()
         st.subheader("📉 Pire dimensionnement (MWh)")
+        st.markdown("*Rouge = Surestimé par la simulation*")
         col1, col2 = st.columns(2)
         top10_c = df_mensuel.sort_values(by='Abs_Erreur_Conso', ascending=False).head(10)
         if not top10_c.empty:
@@ -307,6 +308,7 @@ if st.session_state.get('calcul_termine', False):
             
         st.divider()
         st.subheader("📉 Pire dimensionnement (%)")
+        st.markdown("*Rouge = Surestimé par la simulation*")
         col3, col4 = st.columns(2)
         top10_cp = df_mensuel.sort_values(by='Abs_Erreur_Conso_%', ascending=False).head(10)
         if not top10_cp.empty:
