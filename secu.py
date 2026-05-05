@@ -29,12 +29,30 @@ fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['
 # ==========================================
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     
-    if st.sidebar.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True):
+    # Le calcul se lance soit par le bouton principal, soit par l'Éditeur de Mapping
+    btn_lancer = st.sidebar.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
+    
+    if btn_lancer or st.session_state.get('trigger_recalc', False):
         
+        # On remet le trigger à False pour ne pas boucler indéfiniment
+        if st.session_state.get('trigger_recalc', False):
+            st.session_state['trigger_recalc'] = False
+            
         with st.spinner("Analyse, fusion et magie temporelle en cours..."):
             try:
                 # --- A. MAPPING & CONTACTS ---
-                df_mapping = pd.read_excel(fichier_mapping)
+                
+                # Si c'est un nouveau lancement, on lit le fichier. Si c'est un recalcul, on lit le mapping édité.
+                if 'custom_mapping' not in st.session_state or btn_lancer:
+                    df_mapping_raw = pd.read_excel(fichier_mapping)
+                    # Création de la colonne de critère si elle n'existe pas dans l'Excel uploadé
+                    if 'Critère de liaison' not in df_mapping_raw.columns:
+                        df_mapping_raw['Critère de liaison'] = "Contrat d'énergie"
+                    st.session_state['custom_mapping'] = df_mapping_raw
+                else:
+                    df_mapping_raw = st.session_state['custom_mapping']
+
+                df_mapping = df_mapping_raw.copy()
                 df_mapping['Nom_Streamlit'] = df_mapping['Nom_Streamlit'].astype(str).str.split(',')
                 df_mapping = df_mapping.explode('Nom_Streamlit')
                 df_mapping['Nom_Reel'] = df_mapping['Nom_Reel'].astype(str).str.split(',')
@@ -44,8 +62,14 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 count_sim = df_mapping.groupby('Nom_Streamlit')['Nom_Reel'].transform('nunique')
                 df_mapping['Super_Groupe'] = np.where(count_sim > 1, df_mapping['Nom_Streamlit'], df_mapping['Nom_Reel'])
+                
                 mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
-                mapping_reel = dict(zip(df_mapping['Nom_Reel'], df_mapping['Super_Groupe']))
+                
+                # NOUVEAU : Création de 3 dictionnaires de mapping distincts selon le critère choisi
+                mapping_ean = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Super_Groupe']))
+                mapping_epo = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Super_Groupe']))
+                mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
+                mapping_groupe = dict(zip(df_mapping[mask_groupe]['Nom_Reel'], df_mapping[mask_groupe]['Super_Groupe']))
 
                 df_contacts = pd.read_excel(fichier_contacts, dtype=str)
                 est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
@@ -54,6 +78,9 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
                 df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 df_contacts = df_contacts.drop_duplicates(subset=['Ean'], keep='first')
+                
+                if 'Entry Point Owner' in df_contacts.columns:
+                    df_contacts['Entry Point Owner'] = df_contacts['Entry Point Owner'].astype(str).replace(['nan', 'NaN'], np.nan).str.strip()
 
                 # --- B. LECTURE DE TOUS LES FICHIERS SIBELGA ---
                 df_reels_list = []
@@ -91,9 +118,23 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                     df_agg = df_r.groupby(c_ean)[[c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]].sum().reset_index()
                     df_agg.columns = ['EAN', 'Volume Partagé (kWh)', 'Volume Complémentaire (kWh)', 'Injection Partagée (kWh)', 'Injection Résiduelle (kWh)']
                     
-                    df_c = pd.merge(df_agg, df_contacts[['Ean', 'Groupe_Odoo', 'Nom']], left_on='EAN', right_on='Ean', how='left')
+                    cols_to_merge = ['Ean', 'Groupe_Odoo', 'Nom']
+                    if 'Entry Point Owner' in df_contacts.columns:
+                        cols_to_merge.append('Entry Point Owner')
+                        
+                    df_c = pd.merge(df_agg, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
                     df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Inconnu")
-                    df_c['Proprietaire'] = df_c['Prop_Odoo'].map(mapping_reel).fillna(df_c['Prop_Odoo'])
+                    
+                    # NOUVEAU : Mapping chirurgical. On applique les dicos respectifs.
+                    df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_ean)
+                    if 'Entry Point Owner' in df_c.columns:
+                        df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_epo)
+                    else:
+                        df_c['Mapped_EPO'] = np.nan
+                    df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
+                    
+                    # Cascade : L'EAN a priorité, puis EPO, puis Groupe, puis on garde le nom Odoo par défaut
+                    df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
                     
                     df_c['Reel_Conso_Partagee_MWh'] = df_c['Volume Partagé (kWh)'] / 1000.0
                     df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
@@ -149,7 +190,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
 
-                # ALERTES (Stockées pour affichage ultérieur)
+                # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
                 alertes = []
                 inconnus = df_reels_all[df_reels_all['Prop_Odoo'] == 'Inconnu']['EAN'].unique()
                 if len(inconnus) > 0: alertes.append(("error", f"**ALERTE ODOO (EAN facturés mais inconnus) :** {', '.join(inconnus)}"))
@@ -170,7 +211,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
-                # NOUVEAU: Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -188,6 +228,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 st.session_state['df_comparatif'] = df_comparatif
                 st.session_state['df_analyse'] = df_analyse
                 st.session_state['alertes'] = alertes
+                st.session_state['simu_sans_map'] = list(simu_sans_map)
+                st.session_state['fact_jamais_sim'] = list(fact_jamais_sim)
+                
+                cols_ref = ['Groupe_Odoo', 'Entry Point Owner', 'Ean'] if 'Entry Point Owner' in df_contacts.columns else ['Groupe_Odoo', 'Nom', 'Ean']
+                st.session_state['df_contacts_ref'] = df_contacts[cols_ref].copy()
+                
                 st.session_state['calcul_termine'] = True
 
             except Exception as e:
@@ -212,7 +258,7 @@ if st.session_state.get('calcul_termine', False):
     
     # SÉLECTEUR DE VUE PRINCIPAL
     col_choix1, col_choix2 = st.columns([1, 2])
-    vue_choisie = col_choix1.radio("Sélectionnez le mode d'exploration :", ["📆 Vue Globale / Annuelle", "📅 Vue Mensuelle (Détail)"], index=0)
+    vue_choisie = col_choix1.radio("Sélectionnez le mode d'exploration :", ["📆 Vue Globale / Annuelle", "📅 Vue Mensuelle (Détail)", "🔗 Éditeur de Mapping"], index=0)
 
    # =========================================================
     # 📅 VUE MENSUELLE (Filtrage sur 1 mois)
@@ -221,14 +267,12 @@ if st.session_state.get('calcul_termine', False):
         periodes_dispos = df_analyse[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')
         mois_cible_str = col_choix2.selectbox("Sélectionnez le mois à analyser en détail :", periodes_dispos['Periode_Str'].tolist())
         
-        # CORRECTION 1 : On exclut les membres qui n'ont pas de vraie facture sur CE mois précis
         df_mensuel = df_analyse[(df_analyse['Periode_Str'] == mois_cible_str) & (df_analyse['Has_Facture'] == True)].copy()
         
         st.divider()
         st.subheader(f"🌍 Analyse Globale ({mois_cible_str})")
         col_m1, col_m2, col_m3 = st.columns(3)
         
-        # Calculs complets pour inclure les valeurs simulées
         tot_r_conso = df_mensuel['Reel_Conso_Totale_MWh'].sum()
         tot_s_conso = df_mensuel['Sim_Conso_Totale_MWh'].sum()
         pct_conso = ((tot_s_conso - tot_r_conso) / tot_r_conso * 100) if tot_r_conso > 0 else 0
@@ -241,13 +285,13 @@ if st.session_state.get('calcul_termine', False):
         tot_s_ech = df_mensuel['Sim_Conso_Partagee_MWh'].sum()
         pct_ech = ((tot_s_ech - tot_r_ech) / tot_r_ech * 100) if tot_r_ech > 0 else 0
         
-        # CORRECTION 2 : Ajout des (Simu: X) à côté des pourcentages
         col_m1.metric("⚡ Total Consommé", f"{tot_r_conso:.2f} MWh", f"{pct_conso:+.1f}% (Simu: {tot_s_conso:.2f})", delta_color="off")
         col_m2.metric("☀️ Total Produit", f"{tot_r_prod:.2f} MWh", f"{pct_prod:+.1f}% (Simu: {tot_s_prod:.2f})", delta_color="off")
         col_m3.metric("🤝 Total Échangé", f"{tot_r_ech:.2f} MWh", f"{pct_ech:+.1f}% (Simu: {tot_s_ech:.2f})", delta_color="off")
         
         st.divider()
         st.subheader("📉 Pire dimensionnement (MWh)")
+        st.markdown("*Rouge = Surestimé par la simulation*")
         col1, col2 = st.columns(2)
         top10_c = df_mensuel.sort_values(by='Abs_Erreur_Conso', ascending=False).head(10)
         if not top10_c.empty:
@@ -264,6 +308,7 @@ if st.session_state.get('calcul_termine', False):
             
         st.divider()
         st.subheader("📉 Pire dimensionnement (%)")
+        st.markdown("*Rouge = Surestimé par la simulation*")
         col3, col4 = st.columns(2)
         top10_cp = df_mensuel.sort_values(by='Abs_Erreur_Conso_%', ascending=False).head(10)
         if not top10_cp.empty:
@@ -280,6 +325,7 @@ if st.session_state.get('calcul_termine', False):
             
         st.divider()
         st.subheader("📊 Vue globale : Réalité vs Simulation")
+        st.markdown("*Point au dessus de la courbe = Surestimé par la simulation*")
         fig_nuage, axes = plt.subplots(2, 2, figsize=(16, 14))
         for idx, (col_r, col_s, title, color) in enumerate([('Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', '1. Conso Totale', '#3498db'), ('Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', '2. Prod Totale', '#2ecc71'), ('Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', '3. Conso Échangée', '#9b59b6'), ('Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh', '4. Prod Échangée', '#f1c40f')]):
             row, col = idx // 2, idx % 2
@@ -294,7 +340,7 @@ if st.session_state.get('calcul_termine', False):
     # =========================================================
     # 📆 VUE GLOBALE ANNUELLE
     # =========================================================
-    else:
+    elif vue_choisie == "📆 Vue Globale / Annuelle":
         st.divider()
         st.subheader("🌍 Bilan Cumulé sur la période")
         col_a1, col_a2, col_a3 = st.columns(3)
@@ -316,7 +362,6 @@ if st.session_state.get('calcul_termine', False):
         st.subheader("📈 Visualisation Détaillée Globale")
         choix_kpi_global = st.radio("Sélectionnez l'indicateur global à analyser :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
         
-        # NOUVEAU: Récupération des 4 colonnes (R, S, Err_MWh, Err_Pct)
         if choix_kpi_global == "⚡ Consommation":
             col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh', 'Erreur_Conso_%'
         elif choix_kpi_global == "☀️ Production":
@@ -324,7 +369,6 @@ if st.session_state.get('calcul_termine', False):
         else:
             col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', 'Erreur_Partage_MWh', 'Erreur_Partage_%'
 
-        # Largeur dynamique pour la tendance et la heatmap (pour scroller horizontalement si > 12 mois)
         n_mois = len(df_analyse['Sort_Key'].unique())
         fig_width = max(14, n_mois * 0.9)
 
@@ -416,6 +460,54 @@ if st.session_state.get('calcul_termine', False):
             col_i2.pyplot(fig_indiv, use_container_width=False)
         else:
             st.info("Ce membre n'a aucune facture enregistrée sur la période sélectionnée.")
+
+    # =========================================================
+    # 🔗 ÉDITEUR DE MAPPING INTERACTIF (AVEC CRITÈRE)
+    # =========================================================
+    elif vue_choisie == "🔗 Éditeur de Mapping":
+        st.divider()
+        st.subheader("🛠️ Éditeur de Correspondance (Mapping)")
+        st.markdown("Vous pouvez lier un nom de simulation à n'importe quel paramètre Odoo en modifiant le tableau ci-dessous.")
+        
+        col_hint1, col_hint2 = st.columns(2)
+        with col_hint1:
+            liste_simu = st.session_state.get('simu_sans_map', [])
+            if liste_simu:
+                st.warning("**Noms Streamlit orphelins (À lier) :**\n\n" + ", ".join(liste_simu))
+            else:
+                st.success("✅ Tous les membres de la simulation sont mappés.")
+                
+        with col_hint2:
+            liste_fact = st.session_state.get('fact_jamais_sim', [])
+            if liste_fact:
+                st.info("**Noms Odoo facturés mais non simulés :**\n\n" + ", ".join(liste_fact))
+            else:
+                st.success("✅ Tous les compteurs facturés ont une simulation.")
+
+        with st.expander("Voir le référentiel des contacts Odoo (Pour copier-coller)"):
+            st.dataframe(st.session_state['df_contacts_ref'], use_container_width=True)
+
+        # Configuration de la nouvelle colonne de l'éditeur
+        col_config = {
+            "Critère de liaison": st.column_config.SelectboxColumn(
+                "Critère de liaison",
+                help="Où l'outil doit-il chercher ce nom dans Odoo ?",
+                options=["Contrat d'énergie", "Entry Point Owner", "EAN"],
+                required=True
+            )
+        }
+
+        edited_mapping = st.data_editor(
+            st.session_state['custom_mapping'], 
+            num_rows="dynamic", 
+            use_container_width=True,
+            column_config=col_config
+        )
+        
+        if st.button("💾 Enregistrer le Mapping et Recalculer", type="primary"):
+            st.session_state['custom_mapping'] = edited_mapping
+            st.session_state['trigger_recalc'] = True
+            st.rerun()
 
     # ==========================================
     # BASE DE DONNÉES ET TÉLÉCHARGEMENT
