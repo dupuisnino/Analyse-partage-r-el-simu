@@ -337,11 +337,25 @@ if st.session_state.get('calcul_termine', False):
         fig_nuage, axes = plt.subplots(2, 2, figsize=(16, 14))
         for idx, (col_r, col_s, title, color) in enumerate([('Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', '1. Conso Totale', '#3498db'), ('Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', '2. Prod Totale', '#2ecc71'), ('Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', '3. Conso Échangée', '#9b59b6'), ('Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh', '4. Prod Échangée', '#f1c40f')]):
             row, col = idx // 2, idx % 2
-            df_f = df_mensuel[(df_mensuel[col_r] > 0) | (df_mensuel[col_s] > 0)]
+            
+            # Ajout de .copy() pour pouvoir modifier le dataframe sans warning
+            df_f = df_mensuel[(df_mensuel[col_r] > 0) | (df_mensuel[col_s] > 0)].copy()
             axes[row, col].scatter(df_f[col_r], df_f[col_s], color=color, alpha=0.8, edgecolor='black', s=60)
             m = max(df_f[col_r].max(), df_f[col_s].max())
             if pd.notna(m) and m > 0: axes[row, col].plot([0, m], [0, m], 'r--', label='Idéal')
             axes[row, col].set_title(title, fontweight='bold'); axes[row, col].set_xlabel('Sibelga'); axes[row, col].set_ylabel('Streamlit')
+            
+            # --- NOUVEAU : Annotation des 5 pires erreurs en MWh ---
+            df_f['Err_Abs_Locale'] = (df_f[col_s] - df_f[col_r]).abs()
+            top5 = df_f.sort_values(by='Err_Abs_Locale', ascending=False).head(5)
+            
+            for _, r_data in top5.iterrows():
+                # On tronque le nom à 15 caractères pour ne pas surcharger le graphique
+                axes[row, col].annotate(r_data['Proprietaire'][:15], 
+                                        (r_data[col_r], r_data[col_s]), 
+                                        fontsize=9, xytext=(5,5), textcoords='offset points')
+            # ---------------------------------------------------------
+            
         plt.tight_layout(); st.pyplot(fig_nuage)
 
 
@@ -350,16 +364,21 @@ if st.session_state.get('calcul_termine', False):
     # =========================================================
     elif vue_choisie == "📆 Vue Globale / Annuelle":
         st.divider()
-        st.subheader("🌍 Bilan Cumulé sur la période")
+        st.subheader("🌍 Bilan Cumulé sur la période (Apples to Apples)")
+        st.markdown("*Note : Seules les périodes facturées sont prises en compte pour comparer équitablement.*")
+        
+        # LA CORRECTION EST ICI : on ne somme que les lignes qui ont une facture
+        df_apples = df_analyse[df_analyse['Has_Facture'] == True]
+        
         col_a1, col_a2, col_a3 = st.columns(3)
-        t_rc = df_analyse['Reel_Conso_Totale_MWh'].sum()
-        t_sc = df_analyse['Sim_Conso_Totale_MWh'].sum()
+        t_rc = df_apples['Reel_Conso_Totale_MWh'].sum()
+        t_sc = df_apples['Sim_Conso_Totale_MWh'].sum()
         pc_c = ((t_sc - t_rc) / t_rc * 100) if t_rc > 0 else 0
-        t_rp = df_analyse['Reel_Prod_Totale_MWh'].sum()
-        t_sp = df_analyse['Sim_Prod_Totale_MWh'].sum()
+        t_rp = df_apples['Reel_Prod_Totale_MWh'].sum()
+        t_sp = df_apples['Sim_Prod_Totale_MWh'].sum()
         pc_p = ((t_sp - t_rp) / t_rp * 100) if t_rp > 0 else 0
-        t_re = df_analyse['Reel_Conso_Partagee_MWh'].sum()
-        t_se = df_analyse['Sim_Conso_Partagee_MWh'].sum()
+        t_re = df_apples['Reel_Conso_Partagee_MWh'].sum()
+        t_se = df_apples['Sim_Conso_Partagee_MWh'].sum()
         pc_e = ((t_se - t_re) / t_re * 100) if t_re > 0 else 0
         
         col_a1.metric("⚡ Total Consommé (Cumulé)", f"{t_rc:.2f} MWh", f"{pc_c:+.1f}% (Simu: {t_sc:.2f})", delta_color="off")
