@@ -350,16 +350,21 @@ if st.session_state.get('calcul_termine', False):
     # =========================================================
     elif vue_choisie == "📆 Vue Globale / Annuelle":
         st.divider()
-        st.subheader("🌍 Bilan Cumulé sur la période")
+        st.subheader("🌍 Bilan Cumulé sur la période (Apples to Apples)")
+        st.markdown("*Note : Seules les périodes facturées sont prises en compte pour comparer équitablement.*")
+        
+        # LA CORRECTION EST ICI : on ne somme que les lignes qui ont une facture
+        df_apples = df_analyse[df_analyse['Has_Facture'] == True]
+        
         col_a1, col_a2, col_a3 = st.columns(3)
-        t_rc = df_analyse['Reel_Conso_Totale_MWh'].sum()
-        t_sc = df_analyse['Sim_Conso_Totale_MWh'].sum()
+        t_rc = df_apples['Reel_Conso_Totale_MWh'].sum()
+        t_sc = df_apples['Sim_Conso_Totale_MWh'].sum()
         pc_c = ((t_sc - t_rc) / t_rc * 100) if t_rc > 0 else 0
-        t_rp = df_analyse['Reel_Prod_Totale_MWh'].sum()
-        t_sp = df_analyse['Sim_Prod_Totale_MWh'].sum()
+        t_rp = df_apples['Reel_Prod_Totale_MWh'].sum()
+        t_sp = df_apples['Sim_Prod_Totale_MWh'].sum()
         pc_p = ((t_sp - t_rp) / t_rp * 100) if t_rp > 0 else 0
-        t_re = df_analyse['Reel_Conso_Partagee_MWh'].sum()
-        t_se = df_analyse['Sim_Conso_Partagee_MWh'].sum()
+        t_re = df_apples['Reel_Conso_Partagee_MWh'].sum()
+        t_se = df_apples['Sim_Conso_Partagee_MWh'].sum()
         pc_e = ((t_se - t_re) / t_re * 100) if t_re > 0 else 0
         
         col_a1.metric("⚡ Total Consommé (Cumulé)", f"{t_rc:.2f} MWh", f"{pc_c:+.1f}% (Simu: {t_sc:.2f})", delta_color="off")
