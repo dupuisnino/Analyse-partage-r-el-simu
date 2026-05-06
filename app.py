@@ -195,7 +195,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = pd.merge(df_base, df_reels_final, on=['Proprietaire', 'Mois', 'Annee', 'Sort_Key'], how='left')
                 df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
-                df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
+                
+                # --- CORRECTION ICI : On ne supprime plus "Indéfini" ni "Inconnu". ---
+                # On ne retire que les noms vides ou invalides causés par des lignes blanches Excel.
+                df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN'])]
 
                 # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
                 alertes = []
@@ -218,7 +221,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
-                # NOUVEAU: Calcul de l'erreur en % pour le partage
+                # Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
