@@ -72,7 +72,7 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
                 
-                # NOUVEAU : Création de 3 dictionnaires de mapping distincts selon le critère choisi
+                # Création de 3 dictionnaires de mapping distincts selon le critère choisi
                 mapping_ean = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Super_Groupe']))
                 mapping_epo = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Super_Groupe']))
                 mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
@@ -130,9 +130,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                         cols_to_merge.append('Entry Point Owner')
                         
                     df_c = pd.merge(df_agg, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
-                    df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Inconnu")
+                    # C'est ici que "Indéfini" apparaît si le compteur n'est pas dans Odoo
+                    df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Indéfini")
                     
-                    # NOUVEAU : Mapping chirurgical. On applique les dicos respectifs.
+                    # Mapping chirurgical. On applique les dicos respectifs.
                     df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_ean)
                     if 'Entry Point Owner' in df_c.columns:
                         df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_epo)
@@ -196,13 +197,14 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
                 
-                # --- CORRECTION ICI : On ne supprime plus "Indéfini" ni "Inconnu". ---
-                # On ne retire que les noms vides ou invalides causés par des lignes blanches Excel.
+                # CORRECTION MAJEURE ICI : 
+                # On ne retire plus 'Indéfini' ni 'Inconnu'. On garde TOUS les membres qui ont des vraies factures.
+                # On ne jette que les bugs de cellules vides d'Excel ('', '0', 'nan').
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN'])]
 
                 # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
                 alertes = []
-                inconnus = df_reels_all[df_reels_all['Prop_Odoo'] == 'Inconnu']['EAN'].unique()
+                inconnus = df_reels_all[df_reels_all['Prop_Odoo'] == 'Indéfini']['EAN'].unique()
                 if len(inconnus) > 0: alertes.append(("error", f"**ALERTE ODOO (EAN facturés mais inconnus) :** {', '.join(inconnus)}"))
                 simu_sans_map = p_simu - set(mapping_sim.keys())
                 if len(simu_sans_map) > 0: alertes.append(("warning", f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_map)}"))
@@ -214,14 +216,15 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 if simu_jamais_fact: alertes.append(("warning", f"**Simulés sur la période mais SANS AUCUNE facture :** {', '.join(simu_jamais_fact)}"))
                 if not alertes: alertes.append(("success", "✅ Bases de données parfaitement alignées sur toute la période !"))
 
+                # Remplacement magique : Les membres facturés non-simulés (comme "Indéfini") reçoivent 0 en simulation !
                 df_comparatif = df_comparatif.fillna(0)
+                
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                 df_comparatif['Erreur_Partage_MWh'] = df_comparatif['Sim_Conso_Partagee_MWh'] - df_comparatif['Reel_Conso_Partagee_MWh']
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
-                # Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -341,23 +344,19 @@ if st.session_state.get('calcul_termine', False):
         for idx, (col_r, col_s, title, color) in enumerate([('Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', '1. Conso Totale', '#3498db'), ('Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', '2. Prod Totale', '#2ecc71'), ('Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', '3. Conso Échangée', '#9b59b6'), ('Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh', '4. Prod Échangée', '#f1c40f')]):
             row, col = idx // 2, idx % 2
             
-            # Ajout de .copy() pour pouvoir modifier le dataframe sans warning
             df_f = df_mensuel[(df_mensuel[col_r] > 0) | (df_mensuel[col_s] > 0)].copy()
             axes[row, col].scatter(df_f[col_r], df_f[col_s], color=color, alpha=0.8, edgecolor='black', s=60)
             m = max(df_f[col_r].max(), df_f[col_s].max())
             if pd.notna(m) and m > 0: axes[row, col].plot([0, m], [0, m], 'r--', label='Idéal')
             axes[row, col].set_title(title, fontweight='bold'); axes[row, col].set_xlabel('Sibelga'); axes[row, col].set_ylabel('Streamlit')
             
-            # --- NOUVEAU : Annotation des 5 pires erreurs en MWh ---
             df_f['Err_Abs_Locale'] = (df_f[col_s] - df_f[col_r]).abs()
             top5 = df_f.sort_values(by='Err_Abs_Locale', ascending=False).head(5)
             
             for _, r_data in top5.iterrows():
-                # On tronque le nom à 15 caractères pour ne pas surcharger le graphique
                 axes[row, col].annotate(r_data['Proprietaire'][:15], 
                                         (r_data[col_r], r_data[col_s]), 
                                         fontsize=9, xytext=(5,5), textcoords='offset points')
-            # ---------------------------------------------------------
             
         plt.tight_layout(); st.pyplot(fig_nuage)
 
