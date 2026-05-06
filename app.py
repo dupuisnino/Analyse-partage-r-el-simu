@@ -364,7 +364,7 @@ if st.session_state.get('calcul_termine', False):
     # =========================================================
     elif vue_choisie == "📆 Vue Globale / Annuelle":
         st.divider()
-        st.subheader("🌍 Bilan Cumulé sur la période (Apples to Apples)")
+        st.subheader("🌍 Bilan Cumulé sur la période")
         st.markdown("*Note : Seules les périodes facturées sont prises en compte pour comparer équitablement.*")
         
         # LA CORRECTION EST ICI : on ne somme que les lignes qui ont une facture
