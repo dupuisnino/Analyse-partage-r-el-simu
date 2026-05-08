@@ -21,7 +21,10 @@ def parser_sibelga_15min(fichiers_bytes):
     df_list = []
     for f in fichiers_bytes:
         df_r = pd.read_excel(io.BytesIO(f))
-        df_r['Datetime'] = pd.to_datetime(df_r['Date Début'])
+        
+        # ALIGNEMENT STRICT : On fige la date telle qu'elle est écrite
+        df_r['Datetime'] = pd.to_datetime(df_r['Date Début']).dt.tz_localize(None)
+        
         df_r['EAN'] = df_r['EAN'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
         df_r['Volume (kWh)'] = pd.to_numeric(df_r['Volume (kWh)'], errors='coerce').fillna(0)
 
@@ -37,11 +40,8 @@ def parser_sibelga_15min(fichiers_bytes):
 def parser_simu_15min(fichier_bytes):
     df_s = pd.read_csv(io.BytesIO(fichier_bytes))
     
-    # GESTION FUSEAUX HORAIRES : Convertit la simu UTC en heure locale Belge
-    dt_simu = pd.to_datetime(df_s['Unnamed: 0'])
-    if dt_simu.dt.tz is None:
-        dt_simu = dt_simu.dt.tz_localize('UTC')
-    df_s['Datetime'] = dt_simu.dt.tz_convert('Europe/Brussels').dt.tz_localize(None)
+    # ALIGNEMENT STRICT : On enlève tout fuseau horaire pour s'aligner sur Sibelga
+    df_s['Datetime'] = pd.to_datetime(df_s['Unnamed: 0']).dt.tz_localize(None)
 
     p_bruts = set(c.split('_')[0] for c in df_s.columns if c not in ['Unnamed: 0', 'Datetime', 'Mois_Simu'])
     tech = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n', 'pv', 'total', 'self', 'tariff', 'period', 'battery', 'allocation', 'consumed', 'repartition'}
@@ -69,15 +69,15 @@ st.sidebar.header("⚙️ 1. Paramétrage")
 mode_precision = st.sidebar.radio("Mode d'analyse :", ["Analyse Mensuelle (Rapide)", "Analyse 15-min (Précise)"])
 
 st.sidebar.header("📁 2. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo ", type=['xlsx'])
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 
 # Uploaders conditionnels (Exclusivité)
 if mode_precision == "Analyse Mensuelle (Rapide)":
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS (Excel)", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS", type=['xlsx'], accept_multiple_files=True)
 else:
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN (Excel)", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN", type=['xlsx'], accept_multiple_files=True)
 
-fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
+fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 
@@ -92,7 +92,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
         if st.session_state.get('trigger_recalc', False):
             st.session_state['trigger_recalc'] = False
             
-        with st.spinner("Analyse, fusion et magie temporelle en cours..."):
+        with st.spinner("Analyse, fusion à la ligne près en cours..."):
             try:
                 # --- A. MAPPING & CONTACTS (COMMUN) ---
                 if 'custom_mapping' not in st.session_state or btn_lancer:
@@ -257,16 +257,16 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
                     df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
 
+                    # Les 4 lignes corrigées en MWh
                     df_c['Reel_Conso_Partagee_MWh'] = df_c['Consommation Partagée'] / 1000.0
                     df_c['Reel_Conso_Totale_MWh'] = (df_c['Consommation Partagée'] + df_c['Consommation Réseau']) / 1000.0
                     df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée'] / 1000.0
                     df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée'] + df_c['Injection Réseau']) / 1000.0
-                    # ------------------------------------
 
                     df_reels_all = df_c # Pour les alertes "inconnus"
                     df_reels_final = df_c.groupby(['Proprietaire', 'Datetime'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                    # --- Simu 15-min (Ajustement Fuseau Horaire) ---
+                    # --- Simu 15-min ---
                     df_sim_raw = parser_simu_15min(fichier_simu.getvalue())
                     p_simu = df_sim_raw['Nom_Streamlit'].unique() if not df_sim_raw.empty else []
                     
