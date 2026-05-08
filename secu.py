@@ -195,7 +195,10 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif = pd.merge(df_base, df_reels_final, on=['Proprietaire', 'Mois', 'Annee', 'Sort_Key'], how='left')
                 df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
-                df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN', 'Inconnu', 'Indéfini'])]
+                
+                # --- LA CORRECTION EST ICI ---
+                # On ne retire QUE les cellules véritablement vides/buggées de l'Excel, mais ON GARDE "Indéfini" et "Inconnu".
+                df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN'])]
 
                 # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
                 alertes = []
@@ -207,18 +210,20 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 m_factures = set(df_reels_final['Proprietaire'])
                 simu_jamais_fact = list(m_simules - m_factures)
                 fact_jamais_sim = list(m_factures - m_simules)
-                if fact_jamais_sim: alertes.append(("warning", f"**Facturés sur la période mais JAMAIS simulés :** {', '.join(fact_jamais_sim)}"))
+                
+                if fact_jamais_sim: alertes.append(("warning", f"**Facturés sur la période mais JAMAIS simulés (Ajoutés avec simulation à 0) :** {', '.join(fact_jamais_sim)}"))
                 if simu_jamais_fact: alertes.append(("warning", f"**Simulés sur la période mais SANS AUCUNE facture :** {', '.join(simu_jamais_fact)}"))
                 if not alertes: alertes.append(("success", "✅ Bases de données parfaitement alignées sur toute la période !"))
 
+                # Remplacement magique: Les membres facturés mais non simulés reçoivent 0 pour la simulation.
                 df_comparatif = df_comparatif.fillna(0)
+                
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
                 df_comparatif['Erreur_Partage_MWh'] = df_comparatif['Sim_Conso_Partagee_MWh'] - df_comparatif['Reel_Conso_Partagee_MWh']
                 
                 df_comparatif['Erreur_Conso_%'] = np.where(df_comparatif['Reel_Conso_Totale_MWh'] > 0, (df_comparatif['Erreur_Conso_MWh'] / df_comparatif['Reel_Conso_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Totale_MWh'] > 0, 100.0, 0.0))
                 df_comparatif['Erreur_Prod_%'] = np.where(df_comparatif['Reel_Prod_Totale_MWh'] > 0, (df_comparatif['Erreur_Prod_MWh'] / df_comparatif['Reel_Prod_Totale_MWh']) * 100, np.where(df_comparatif['Sim_Prod_Totale_MWh'] > 0, 100.0, 0.0))
-                # NOUVEAU: Calcul de l'erreur en % pour le partage
                 df_comparatif['Erreur_Partage_%'] = np.where(df_comparatif['Reel_Conso_Partagee_MWh'] > 0, (df_comparatif['Erreur_Partage_MWh'] / df_comparatif['Reel_Conso_Partagee_MWh']) * 100, np.where(df_comparatif['Sim_Conso_Partagee_MWh'] > 0, 100.0, 0.0))
                 
                 df_comparatif['Abs_Erreur_Conso'] = df_comparatif['Erreur_Conso_MWh'].abs()
@@ -345,7 +350,7 @@ if st.session_state.get('calcul_termine', False):
             if pd.notna(m) and m > 0: axes[row, col].plot([0, m], [0, m], 'r--', label='Idéal')
             axes[row, col].set_title(title, fontweight='bold'); axes[row, col].set_xlabel('Sibelga'); axes[row, col].set_ylabel('Streamlit')
             
-            # --- NOUVEAU : Annotation des 5 pires erreurs en MWh ---
+            # Annotation des 5 pires erreurs en MWh
             df_f['Err_Abs_Locale'] = (df_f[col_s] - df_f[col_r]).abs()
             top5 = df_f.sort_values(by='Err_Abs_Locale', ascending=False).head(5)
             
@@ -354,7 +359,6 @@ if st.session_state.get('calcul_termine', False):
                 axes[row, col].annotate(r_data['Proprietaire'][:15], 
                                         (r_data[col_r], r_data[col_s]), 
                                         fontsize=9, xytext=(5,5), textcoords='offset points')
-            # ---------------------------------------------------------
             
         plt.tight_layout(); st.pyplot(fig_nuage)
 
@@ -367,7 +371,6 @@ if st.session_state.get('calcul_termine', False):
         st.subheader("🌍 Bilan Cumulé sur la période")
         st.markdown("*Note : Seules les périodes facturées sont prises en compte pour comparer équitablement.*")
         
-        # LA CORRECTION EST ICI : on ne somme que les lignes qui ont une facture
         df_apples = df_analyse[df_analyse['Has_Facture'] == True]
         
         col_a1, col_a2, col_a3 = st.columns(3)
