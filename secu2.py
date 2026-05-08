@@ -260,11 +260,11 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_reels_final['Join_Key'] = df_reels_final['Datetime'].dt.strftime('%m-%d %H:%M')
                     df_sim_final['Join_Key'] = df_sim_final['Datetime'].dt.strftime('%m-%d %H:%M')
 
-                    # On sécurise la simulation (Moyenne en cas de doublon rare lié au changement d'heure 2024 vs 2026)
+                    # On sécurise la simulation (Moyenne en cas de doublon rare lié au changement d'heure)
                     cols_simu = ['Proprietaire', 'Join_Key', 'Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']
                     df_sim_to_merge = df_sim_final[cols_simu].groupby(['Proprietaire', 'Join_Key']).mean().reset_index()
 
-                    # On fusionne. La date absolue restera celle de Sibelga (2026).
+                    # On fusionne. La date absolue restera celle de Sibelga.
                     df_comparatif = pd.merge(df_reels_final, df_sim_to_merge, on=['Proprietaire', 'Join_Key'], how='left')
 
                     df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
@@ -473,7 +473,14 @@ if st.session_state.get('calcul_termine', False):
         st.divider()
 
         st.subheader("📈 Visualisation Détaillée Globale")
-        choix_kpi_global = st.radio("Sélectionnez l'indicateur global :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
+        
+        col_kpi, col_gran = st.columns(2)
+        choix_kpi_global = col_kpi.radio("Sélectionnez l'indicateur global :", ["⚡ Consommation", "☀️ Production", "🤝 Échange (Partagé)"], horizontal=True)
+        
+        if st.session_state.get('mode_audit') == "Analyse 15-min (Précise)":
+            granularite_globale = col_gran.radio("Granularité temporelle :", ["Par Heure", "Par Jour", "Par Mois"], horizontal=True)
+        else:
+            granularite_globale = "Par Mois"
         
         if choix_kpi_global == "⚡ Consommation":
             col_r, col_s, col_err_mwh, col_err_pct = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 'Erreur_Conso_MWh', 'Erreur_Conso_%'
@@ -485,20 +492,25 @@ if st.session_state.get('calcul_termine', False):
         n_mois = len(df_mensuel_agg['Sort_Key'].unique())
         fig_width = max(14, n_mois * 0.9)
 
-        df_trend = df_apples.groupby(['Sort_Key', 'Periode_Str'], sort=False)[[col_r, col_s]].sum().reset_index()
+        # Création de l'axe temporel dynamique
+        df_trend_base = df_analyse_brut[df_analyse_brut['Has_Facture'] == True].copy()
         
-        df_trend_base = df_analyse_brut[df_analyse_brut['Has_Facture'] == True]
-        df_trend = df_trend_base.groupby('Date_Courbe')[[col_r, col_s]].sum().reset_index()
+        if granularite_globale == "Par Heure" and 'Datetime' in df_trend_base.columns:
+            df_trend_base['Axe_Temps'] = df_trend_base['Datetime'].dt.floor('h')
+        elif granularite_globale == "Par Jour" and 'Datetime' in df_trend_base.columns:
+            df_trend_base['Axe_Temps'] = df_trend_base['Datetime'].dt.normalize()
+        else:
+            df_trend_base['Axe_Temps'] = pd.to_datetime(df_trend_base['Annee'].astype(str) + '-' + df_trend_base['Mois'].astype(str) + '-01')
+
+        df_trend = df_trend_base.groupby('Axe_Temps')[[col_r, col_s]].sum().reset_index()
         
         fig_trend, ax_trend = plt.subplots(figsize=(fig_width, 4))
-        # Enlève les gros points s'il y a trop de jours pour que la courbe reste fine
         use_marker = 'o' if len(df_trend) < 35 else None
         
-        ax_trend.plot(df_trend['Date_Courbe'], df_trend[col_r], marker=use_marker, color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
-        ax_trend.plot(df_trend['Date_Courbe'], df_trend[col_s], marker='x' if use_marker else None, color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
+        ax_trend.plot(df_trend['Axe_Temps'], df_trend[col_r], marker=use_marker, color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
+        ax_trend.plot(df_trend['Axe_Temps'], df_trend[col_s], marker='x' if use_marker else None, color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
         
-        ylabel = 'MWh / Jour' if st.session_state.get('mode_audit') == "Analyse 15-min (Précise)" else 'MWh / Mois'
-        ax_trend.set_ylabel(ylabel)
+        ax_trend.set_ylabel(f'MWh / {granularite_globale.split(" ")[1]}')
         ax_trend.legend()
         st.pyplot(fig_trend, use_container_width=False)
         
@@ -536,7 +548,7 @@ if st.session_state.get('calcul_termine', False):
         st.divider()
 
         # ===============================================
-        # ANALYSE INDIVIDUELLE (AGRÉGATION JOURNALIÈRE)
+        # ANALYSE INDIVIDUELLE (AGRÉGATION DYNAMIQUE)
         # ===============================================
         st.subheader("👤 Analyse Individuelle")
         membre_choisi = st.selectbox("Sélectionnez un membre :", sorted(df_analyse_brut['Proprietaire'].unique()))
@@ -544,39 +556,54 @@ if st.session_state.get('calcul_termine', False):
         df_indiv = df_analyse_brut[(df_analyse_brut['Proprietaire'] == membre_choisi) & (df_analyse_brut['Has_Facture'] == True)].copy()
         
         if not df_indiv.empty:
-            df_indiv_jour = df_indiv.groupby('Date_Courbe')[[
+            
+            options_indiv = []
+            has_conso = (df_indiv['Reel_Conso_Totale_MWh'].sum() > 0) or (df_indiv['Sim_Conso_Totale_MWh'].sum() > 0)
+            has_prod = (df_indiv['Reel_Prod_Totale_MWh'].sum() > 0) or (df_indiv['Sim_Prod_Totale_MWh'].sum() > 0)
+            
+            if has_conso: options_indiv.extend(["⚡ Conso Totale", "🤝 Conso Partagée"])
+            if has_prod: options_indiv.extend(["☀️ Prod Totale", "🤝 Prod Partagée"])
+            if not options_indiv: options_indiv = ["⚡ Conso Totale"]
+                
+            col_indiv_kpi, col_indiv_gran = st.columns(2)
+            choix_kpi_indiv = col_indiv_kpi.radio(f"Indicateur pour {membre_choisi} :", options_indiv, horizontal=True)
+            
+            if st.session_state.get('mode_audit') == "Analyse 15-min (Précise)":
+                granularite_indiv = col_indiv_gran.radio("Granularité :", ["Par Heure", "Par Jour", "Par Mois"], horizontal=True, key="gran_indiv")
+            else:
+                granularite_indiv = "Par Mois"
+                
+            # Création de l'axe temporel individuel
+            if granularite_indiv == "Par Heure" and 'Datetime' in df_indiv.columns:
+                df_indiv['Axe_Temps'] = df_indiv['Datetime'].dt.floor('h')
+            elif granularite_indiv == "Par Jour" and 'Datetime' in df_indiv.columns:
+                df_indiv['Axe_Temps'] = df_indiv['Datetime'].dt.normalize()
+            else:
+                df_indiv['Axe_Temps'] = pd.to_datetime(df_indiv['Annee'].astype(str) + '-' + df_indiv['Mois'].astype(str) + '-01')
+
+            df_indiv_plot = df_indiv.groupby('Axe_Temps')[[
                 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 
                 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 
                 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh'
             ]].sum().reset_index()
 
-            has_conso = (df_indiv_jour['Reel_Conso_Totale_MWh'].sum() > 0) or (df_indiv_jour['Sim_Conso_Totale_MWh'].sum() > 0)
-            has_prod = (df_indiv_jour['Reel_Prod_Totale_MWh'].sum() > 0) or (df_indiv_jour['Sim_Prod_Totale_MWh'].sum() > 0)
-            
-            options_indiv = []
-            if has_conso: options_indiv.extend(["⚡ Conso Totale", "🤝 Conso Partagée"])
-            if has_prod: options_indiv.extend(["☀️ Prod Totale", "🤝 Prod Partagée"])
-            if not options_indiv: options_indiv = ["⚡ Conso Totale"]
-                
-            choix_kpi_indiv = st.radio(f"Indicateur pour {membre_choisi} :", options_indiv, horizontal=True)
-            
             if choix_kpi_indiv == "⚡ Conso Totale": c_r, c_s = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh'
             elif choix_kpi_indiv == "☀️ Prod Totale": c_r, c_s = 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh'
             elif choix_kpi_indiv == "🤝 Conso Partagée": c_r, c_s = 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh'
             else: c_r, c_s = 'Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh'
             
             col_i1, col_i2 = st.columns([1, 2])
-            tot_i_r = df_indiv_jour[c_r].sum()
-            err_i_p = ((df_indiv_jour[c_s].sum() - tot_i_r) / tot_i_r * 100) if tot_i_r > 0 else 0
+            tot_i_r = df_indiv_plot[c_r].sum()
+            err_i_p = ((df_indiv_plot[c_s].sum() - tot_i_r) / tot_i_r * 100) if tot_i_r > 0 else 0
             
             col_i1.metric(f"Bilan de la Période", f"{tot_i_r:.2f} MWh", f"{err_i_p:+.1f}% simulé", delta_color="off")
             
             fig_indiv, ax_indiv = plt.subplots(figsize=(fig_width, 4))
-            use_marker = 'o' if len(df_indiv_jour) < 35 else None
+            use_marker = 'o' if len(df_indiv_plot) < 35 else None
             
-            ax_indiv.plot(df_indiv_jour['Date_Courbe'], df_indiv_jour[c_r], marker=use_marker, color='#9b59b6', linewidth=2, label='Réalité')
-            ax_indiv.plot(df_indiv_jour['Date_Courbe'], df_indiv_jour[c_s], marker='x' if use_marker else None, color='#f1c40f', linestyle='--', linewidth=2, label='Simulation')
-            ax_indiv.set_ylabel('MWh / Jour')
+            ax_indiv.plot(df_indiv_plot['Axe_Temps'], df_indiv_plot[c_r], marker=use_marker, color='#9b59b6', linewidth=2, label='Réalité')
+            ax_indiv.plot(df_indiv_plot['Axe_Temps'], df_indiv_plot[c_s], marker='x' if use_marker else None, color='#f1c40f', linestyle='--', linewidth=2, label='Simulation')
+            ax_indiv.set_ylabel(f'MWh / {granularite_indiv.split(" ")[1]}')
             ax_indiv.legend()
             col_i2.pyplot(fig_indiv, use_container_width=False)
         else:
