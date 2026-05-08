@@ -69,15 +69,15 @@ st.sidebar.header("⚙️ 1. Paramétrage")
 mode_precision = st.sidebar.radio("Mode d'analyse :", ["Analyse Mensuelle (Rapide)", "Analyse 15-min (Précise)"])
 
 st.sidebar.header("📁 2. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
+fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo ", type=['xlsx'])
 
 # Uploaders conditionnels (Exclusivité)
 if mode_precision == "Analyse Mensuelle (Rapide)":
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS (Excel)", type=['xlsx'], accept_multiple_files=True)
 else:
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN (Excel)", type=['xlsx'], accept_multiple_files=True)
 
-fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
+fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping (Excel)", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
 
 
