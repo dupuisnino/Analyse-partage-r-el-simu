@@ -257,11 +257,10 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
                     df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
 
-                    # ---> LES 4 LIGNES RAJOUTÉES ICI <---
-                    df_c['Reel_Conso_Partagee_MWh'] = df_c['Volume Partagé (kWh)'] / 1000.0
-                    df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
-                    df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée (kWh)'] / 1000.0
-                    df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée (kWh)'] + df_c['Injection Résiduelle (kWh)']) / 1000.0
+                    df_c['Reel_Conso_Partagee_MWh'] = df_c['Consommation Partagée'] / 1000.0
+                    df_c['Reel_Conso_Totale_MWh'] = (df_c['Consommation Partagée'] + df_c['Consommation Réseau']) / 1000.0
+                    df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée'] / 1000.0
+                    df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée'] + df_c['Injection Réseau']) / 1000.0
                     # ------------------------------------
 
                     df_reels_all = df_c # Pour les alertes "inconnus"
