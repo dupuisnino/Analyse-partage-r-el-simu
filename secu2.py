@@ -487,10 +487,18 @@ if st.session_state.get('calcul_termine', False):
 
         df_trend = df_apples.groupby(['Sort_Key', 'Periode_Str'], sort=False)[[col_r, col_s]].sum().reset_index()
         
+        df_trend_base = df_analyse_brut[df_analyse_brut['Has_Facture'] == True]
+        df_trend = df_trend_base.groupby('Date_Courbe')[[col_r, col_s]].sum().reset_index()
+        
         fig_trend, ax_trend = plt.subplots(figsize=(fig_width, 4))
-        ax_trend.plot(df_trend['Periode_Str'], df_trend[col_r], marker='o', color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
-        ax_trend.plot(df_trend['Periode_Str'], df_trend[col_s], marker='x', color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
-        ax_trend.set_ylabel('MWh')
+        # Enlève les gros points s'il y a trop de jours pour que la courbe reste fine
+        use_marker = 'o' if len(df_trend) < 35 else None
+        
+        ax_trend.plot(df_trend['Date_Courbe'], df_trend[col_r], marker=use_marker, color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
+        ax_trend.plot(df_trend['Date_Courbe'], df_trend[col_s], marker='x' if use_marker else None, color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
+        
+        ylabel = 'MWh / Jour' if st.session_state.get('mode_audit') == "Analyse 15-min (Précise)" else 'MWh / Mois'
+        ax_trend.set_ylabel(ylabel)
         ax_trend.legend()
         st.pyplot(fig_trend, use_container_width=False)
         
