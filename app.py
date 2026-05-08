@@ -127,16 +127,16 @@ st.sidebar.header("⚙️ 1. Paramétrage")
 mode_precision = st.sidebar.radio("Précision de l'audit :", ["Analyse Mensuelle (Rapide)", "Analyse 15-min (Précise)"])
 
 st.sidebar.header("📁 2. Import des fichiers")
-fichier_contacts = st.sidebar.file_uploader("A. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
+fichier_contacts = st.sidebar.file_uploader("Contacts Odoo (Excel)", type=['xlsx'])
 
 # Uploaders conditionnels (Exclusivité)
 if mode_precision == "Analyse Mensuelle (Rapide)":
-    fichiers_sibelga = st.sidebar.file_uploader("B. Fichiers Sibelga MENSUELS", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("B. Fichiers Sibelga MENSUELS (Excel)", type=['xlsx'], accept_multiple_files=True)
 else:
-    fichiers_sibelga = st.sidebar.file_uploader("B. Fichiers Sibelga 15-MIN", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("B. Fichiers Sibelga 15-MIN (Excel)" , type=['xlsx'], accept_multiple_files=True)
 
-fichier_mapping = st.sidebar.file_uploader("C. Fichier de Mapping", type=['xlsx'])
-fichier_simu = st.sidebar.file_uploader("D. Simulation Streamlit (Toujours 15-min)", type=['csv'])
+fichier_mapping = st.sidebar.file_uploader("C. Fichier de Mapping (Excel)" , type=['xlsx'])
+fichier_simu = st.sidebar.file_uploader("D. Simulation Streamlit (CSV)", type=['csv'])
 
 
 # ==========================================
@@ -171,6 +171,14 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
 
                 # --- B. CONTACTS ---
                 df_contacts = pd.read_excel(fichier_contacts, dtype=str)
+                
+                # --- LIGNES RAJOUTÉES POUR CRÉER LE GROUPE ODOO ---
+                est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
+                df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
+                df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
+                df_contacts = df_contacts.dropna(subset=['Ean']).copy() 
+                # --------------------------------------------------
+
                 df_contacts['Ean'] = df_contacts['Ean'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
                 if 'Entry Point Owner' in df_contacts.columns:
                     df_contacts['Entry Point Owner'] = df_contacts['Entry Point Owner'].astype(str).replace(['nan', 'NaN'], np.nan).str.strip()
