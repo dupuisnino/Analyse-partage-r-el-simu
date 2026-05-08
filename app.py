@@ -11,50 +11,98 @@ st.set_page_config(page_title="Audit Communauté d'Énergie", page_icon="⚡", l
 sns.set_theme(style="whitegrid")
 
 st.title("⚡ Audit Automatique : Réalité vs Simulation")
-st.markdown("Importez vos fichiers, lancez l'analyse, puis explorez les résultats librement.")
+st.markdown("Importez vos fichiers Sibelga (Format 15-min), lancez l'analyse, puis explorez les résultats.")
+
+# ==========================================
+# FONCTIONS CACHÉES (Haute Performance)
+# ==========================================
+@st.cache_data(show_spinner=False)
+def traiter_sibelga_15min(fichiers_bytes):
+    """
+    Lit les fichiers 15-min Sibelga en mémoire, les nettoie, pivote les types de volumes, 
+    et les agrège par mois de façon ultra-rapide (vectorisée).
+    """
+    df_list = []
+    for f_bytes in fichiers_bytes:
+        # Lecture depuis la RAM pour plus de vitesse
+        df_r = pd.read_excel(io.BytesIO(f_bytes))
+        
+        # 1. Extraction temporelle
+        df_r['Datetime'] = pd.to_datetime(df_r['Date Début'])
+        df_r['Mois'] = df_r['Datetime'].dt.month
+        df_r['Annee'] = df_r['Datetime'].dt.year
+        df_r['Sort_Key'] = df_r['Annee'] * 100 + df_r['Mois']
+        
+        # 2. Nettoyage EAN et Volumes
+        df_r['EAN'] = df_r['EAN'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+        df_r['Volume (kWh)'] = pd.to_numeric(df_r['Volume (kWh)'], errors='coerce').fillna(0)
+        
+        # 3. Réduction de taille (On groupe par mois avant de pivoter pour gagner en vitesse)
+        df_agg_initial = df_r.groupby(['EAN', 'Mois', 'Annee', 'Sort_Key', 'Type de volume'])['Volume (kWh)'].sum().reset_index()
+        
+        # 4. Pivot : Transformer les lignes de type de volume en colonnes
+        df_piv = df_agg_initial.pivot_table(index=['EAN', 'Mois', 'Annee', 'Sort_Key'], 
+                                            columns='Type de volume', 
+                                            values='Volume (kWh)', 
+                                            aggfunc='sum').reset_index()
+                                            
+        # 5. Sécurisation (Si un type de volume n'existe pas ce mois-là, on le crée à 0)
+        for col in ['Consommation Partagée', 'Consommation Réseau', 'Injection Partagée', 'Injection Réseau']:
+            if col not in df_piv.columns:
+                df_piv[col] = 0.0
+                
+        df_list.append(df_piv)
+        
+    if not df_list:
+        return pd.DataFrame()
+        
+    # Fusion de tous les fichiers et agrégation finale
+    df_all = pd.concat(df_list)
+    df_final = df_all.groupby(['EAN', 'Mois', 'Annee', 'Sort_Key']).sum(numeric_only=True).reset_index()
+    
+    # Renommage pour s'adapter au reste du moteur de l'application
+    df_final.rename(columns={
+        'Consommation Partagée': 'Volume Partagé (kWh)',
+        'Consommation Réseau': 'Volume Complémentaire (kWh)',
+        'Injection Partagée': 'Injection Partagée (kWh)',
+        'Injection Réseau': 'Injection Résiduelle (kWh)'
+    }, inplace=True)
+    
+    return df_final
+
 
 # ==========================================
 # 1. BARRE LATÉRALE : UPLOADS UNIQUEMENT
 # ==========================================
 st.sidebar.header("📁 1. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
-# On accepte toujours plusieurs fichiers Sibelga !
-fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga (Glissez 1 ou plusieurs mois)", type=['xlsx'], accept_multiple_files=True)
+fichier_factures = st.sidebar.file_uploader("2. Fichiers Sibelga 15-min (Excel)", type=['xlsx'], accept_multiple_files=True)
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
-fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
+fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV Mensuel)", type=['csv'])
 
 
 # ==========================================
-# 2. MOTEUR DE CALCUL CENTRAL (S'exécute une seule fois)
+# 2. MOTEUR DE CALCUL CENTRAL
 # ==========================================
 if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
     
-    # Le calcul se lance soit par le bouton principal, soit par l'Éditeur de Mapping
     btn_lancer = st.sidebar.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
     
     if btn_lancer or st.session_state.get('trigger_recalc', False):
         
-        # On remet le trigger à False pour ne pas boucler indéfiniment
         if st.session_state.get('trigger_recalc', False):
             st.session_state['trigger_recalc'] = False
             
-        with st.spinner("Analyse, fusion et magie temporelle en cours..."):
+        with st.spinner("Lecture des 15-min, agrégation et fusion en cours..."):
             try:
                 # --- A. MAPPING & CONTACTS ---
-                
-                # Si c'est un nouveau lancement, on lit le fichier. Si c'est un recalcul, on lit le mapping édité.
                 if 'custom_mapping' not in st.session_state or btn_lancer:
                     df_mapping_raw = pd.read_excel(fichier_mapping)
-                    
-                    # GESTION DU FICHIER A 3 COLONNES
                     if 'Critère de liaison' not in df_mapping_raw.columns:
-                        # Si l'utilisateur met un vieux fichier à 2 colonnes, on crée la 3ème
                         df_mapping_raw['Critère de liaison'] = "Contrat d'énergie"
                     else:
-                        # S'il met un fichier à 3 colonnes, on bouche les trous potentiels pour éviter les crashs
                         df_mapping_raw['Critère de liaison'] = df_mapping_raw['Critère de liaison'].fillna("Contrat d'énergie")
                         df_mapping_raw['Critère de liaison'] = df_mapping_raw['Critère de liaison'].replace({"Contrat d'energie": "Contrat d'énergie"})
-                        
                     st.session_state['custom_mapping'] = df_mapping_raw
                 else:
                     df_mapping_raw = st.session_state['custom_mapping']
@@ -72,7 +120,6 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 
                 mapping_sim = dict(zip(df_mapping['Nom_Streamlit'], df_mapping['Super_Groupe']))
                 
-                # NOUVEAU : Création de 3 dictionnaires de mapping distincts selon le critère choisi
                 mapping_ean = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'EAN']['Super_Groupe']))
                 mapping_epo = dict(zip(df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Nom_Reel'], df_mapping[df_mapping['Critère de liaison'] == 'Entry Point Owner']['Super_Groupe']))
                 mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
@@ -89,83 +136,50 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 if 'Entry Point Owner' in df_contacts.columns:
                     df_contacts['Entry Point Owner'] = df_contacts['Entry Point Owner'].astype(str).replace(['nan', 'NaN'], np.nan).str.strip()
 
-                # --- B. LECTURE DE TOUS LES FICHIERS SIBELGA ---
-                df_reels_list = []
-                for fact in fichier_factures:
-                    fact.seek(0)
-                    df_r = pd.read_excel(fact, dtype=str)
-                    c_locales = df_r.columns.tolist()
-                    
-                    def trv(opt, exc):
-                        for m in opt:
-                            for c in c_locales:
-                                if all(x in str(c).lower().replace('é','e') for x in m) and not any(x in str(c).lower() for x in exc): return c
-                        return None
-
-                    c_date = trv([['fromdate'], ['date', 'debut'], ['from', 'date'], ['periode', 'debut']], ['fin', 'to', 'todate'])
-                    c_ean = trv([['ean']], [])
-                    c_vol_part = trv([['partage', 'kwh'], ['partage', 'volume'], ['partage', 'consomm']], ['injection', 'production', 'taux', 'statut'])
-                    c_vol_comp = trv([['complementaire', 'kwh'], ['residuel', 'consomm'], ['complementaire', 'volume'], ['residuel', 'volume'], ['reseau', 'consomm']], ['injection', 'production', 'taux', 'statut'])
-                    c_inj_part = trv([['partage', 'injection'], ['partage', 'production']], ['taux', 'statut'])
-                    c_inj_comp = trv([['residuel', 'injection'], ['complementaire', 'injection'], ['reseau', 'injection'], ['reseau', 'kwh']], ['taux', 'statut', 'consomm'])
-
-                    if not all([c_date, c_ean, c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]):
-                        continue # Ignore les fichiers mal formattés
-
-                    # Extraction du mois et de l'année
-                    premiere_date = pd.to_datetime(df_r[c_date].dropna().iloc[0])
-                    m_encours = premiere_date.month
-                    y_encours = premiere_date.year
-                    
-                    df_r[c_ean] = df_r[c_ean].astype(str).str.replace(' ','').str.replace(r'\.0$','',regex=True).str.strip()
-                    for c in [c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]:
-                        if df_r[c].dtype == object: df_r[c] = df_r[c].astype(str).str.replace(',', '.')
-                        df_r[c] = pd.to_numeric(df_r[c], errors='coerce').fillna(0)
-                        
-                    df_agg = df_r.groupby(c_ean)[[c_vol_part, c_vol_comp, c_inj_part, c_inj_comp]].sum().reset_index()
-                    df_agg.columns = ['EAN', 'Volume Partagé (kWh)', 'Volume Complémentaire (kWh)', 'Injection Partagée (kWh)', 'Injection Résiduelle (kWh)']
-                    
-                    cols_to_merge = ['Ean', 'Groupe_Odoo', 'Nom']
-                    if 'Entry Point Owner' in df_contacts.columns:
-                        cols_to_merge.append('Entry Point Owner')
-                        
-                    df_c = pd.merge(df_agg, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
-                    df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Inconnu")
-                    
-                    # NOUVEAU : Mapping chirurgical. On applique les dicos respectifs.
-                    df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_ean)
-                    if 'Entry Point Owner' in df_c.columns:
-                        df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_epo)
-                    else:
-                        df_c['Mapped_EPO'] = np.nan
-                    df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
-                    
-                    # Cascade : L'EAN a priorité, puis EPO, puis Groupe, puis on garde le nom Odoo par défaut
-                    df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
-                    
-                    df_c['Reel_Conso_Partagee_MWh'] = df_c['Volume Partagé (kWh)'] / 1000.0
-                    df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
-                    df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée (kWh)'] / 1000.0
-                    df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée (kWh)'] + df_c['Injection Résiduelle (kWh)']) / 1000.0
-                    
-                    df_c['Mois'] = m_encours
-                    df_c['Annee'] = y_encours
-                    df_c['Sort_Key'] = y_encours * 100 + m_encours # Tri absolu
-                    df_reels_list.append(df_c)
-
-                if not df_reels_list:
-                    st.error("❌ Aucun fichier Sibelga n'a pu être lu. Vérifiez le format.")
+                # --- B. LECTURE OPTIMISÉE DES FICHIERS SIBELGA 15-MIN ---
+                # On extrait les données en bytes pour les passer au cache Streamlit en toute sécurité
+                fichiers_bytes = [f.getvalue() for f in fichier_factures]
+                
+                # Appel de la fonction magique mise en cache
+                df_agg = traiter_sibelga_15min(fichiers_bytes)
+                
+                if df_agg.empty:
+                    st.error("❌ Aucun fichier Sibelga n'a pu être lu ou les colonnes ne correspondent pas.")
                     st.stop()
+                    
+                cols_to_merge = ['Ean', 'Groupe_Odoo', 'Nom']
+                if 'Entry Point Owner' in df_contacts.columns:
+                    cols_to_merge.append('Entry Point Owner')
+                    
+                df_c = pd.merge(df_agg, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
+                df_c['Prop_Odoo'] = df_c['Groupe_Odoo'].fillna(df_c['Nom']).fillna("Indéfini")
+                
+                df_c['Mapped_EAN'] = df_c['EAN'].map(mapping_ean)
+                if 'Entry Point Owner' in df_c.columns:
+                    df_c['Mapped_EPO'] = df_c['Entry Point Owner'].map(mapping_epo)
+                else:
+                    df_c['Mapped_EPO'] = np.nan
+                df_c['Mapped_Groupe'] = df_c['Prop_Odoo'].map(mapping_groupe)
+                
+                # Cascade : L'EAN a priorité, puis EPO, puis Groupe, puis on garde le nom Odoo par défaut
+                df_c['Proprietaire'] = df_c['Mapped_EAN'].fillna(df_c['Mapped_EPO']).fillna(df_c['Mapped_Groupe']).fillna(df_c['Prop_Odoo'])
+                
+                # Conversion en MWh
+                df_c['Reel_Conso_Partagee_MWh'] = df_c['Volume Partagé (kWh)'] / 1000.0
+                df_c['Reel_Conso_Totale_MWh'] = (df_c['Volume Partagé (kWh)'] + df_c['Volume Complémentaire (kWh)']) / 1000.0
+                df_c['Reel_Prod_Partagee_MWh'] = df_c['Injection Partagée (kWh)'] / 1000.0
+                df_c['Reel_Prod_Totale_MWh'] = (df_c['Injection Partagée (kWh)'] + df_c['Injection Résiduelle (kWh)']) / 1000.0
+                
+                # Regroupement final Sibelga par Propriétaire et par Mois (comme avant)
+                df_reels_final = df_c.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                df_reels_all = pd.concat(df_reels_list)
-                df_reels_final = df_reels_all.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                # --- C. CALENDRIER MAÎTRE ET SIMULATION ---
-                master_calendar = df_reels_all[['Mois', 'Annee', 'Sort_Key']].drop_duplicates()
+                # --- C. CALENDRIER MAÎTRE ET SIMULATION MENSUELLE ---
+                master_calendar = df_reels_final[['Mois', 'Annee', 'Sort_Key']].drop_duplicates()
 
                 df_s = pd.read_csv(fichier_simu)
                 df_s['Mois_Simu'] = pd.to_datetime(df_s['Unnamed: 0']).dt.month
-                mois_presents = df_reels_all['Mois'].unique().tolist()
+                mois_presents = df_reels_final['Mois'].unique().tolist()
                 df_s = df_s[df_s['Mois_Simu'].isin(mois_presents)]
 
                 p_bruts = set(c.split('_')[0] for c in df_s.columns if c not in ['Unnamed: 0', 'Mois_Simu'])
@@ -187,7 +201,8 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                 df_sim_final = df_sim_agg.groupby(['Proprietaire', 'Mois'])[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
-                # --- D. FUSION GLOBALE MULTI-MOIS ---
+
+                # --- D. FUSION GLOBALE ---
                 all_props = list(set(df_reels_final['Proprietaire']).union(set(df_sim_final['Proprietaire'])))
                 df_props = pd.DataFrame({'Proprietaire': all_props})
                 df_base = df_props.assign(key=1).merge(master_calendar.assign(key=1), on='key').drop('key', axis=1)
@@ -196,13 +211,12 @@ if fichier_contacts and fichier_factures and fichier_mapping and fichier_simu:
                 df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
                 df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
                 
-                # --- LA CORRECTION EST ICI ---
                 # On ne retire QUE les cellules véritablement vides/buggées de l'Excel, mais ON GARDE "Indéfini" et "Inconnu".
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN'])]
 
-                # ALERTES (Stockées pour affichage ultérieur et pour l'éditeur de mapping)
+                # ALERTES
                 alertes = []
-                inconnus = df_reels_all[df_reels_all['Prop_Odoo'] == 'Inconnu']['EAN'].unique()
+                inconnus = df_c[df_c['Prop_Odoo'] == 'Indéfini']['EAN'].unique()
                 if len(inconnus) > 0: alertes.append(("error", f"**ALERTE ODOO (EAN facturés mais inconnus) :** {', '.join(inconnus)}"))
                 simu_sans_map = p_simu - set(mapping_sim.keys())
                 if len(simu_sans_map) > 0: alertes.append(("warning", f"**ALERTE MAPPING (Membres Streamlit non traduits) :** {', '.join(simu_sans_map)}"))
@@ -343,19 +357,16 @@ if st.session_state.get('calcul_termine', False):
         for idx, (col_r, col_s, title, color) in enumerate([('Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', '1. Conso Totale', '#3498db'), ('Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', '2. Prod Totale', '#2ecc71'), ('Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh', '3. Conso Échangée', '#9b59b6'), ('Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh', '4. Prod Échangée', '#f1c40f')]):
             row, col = idx // 2, idx % 2
             
-            # Ajout de .copy() pour pouvoir modifier le dataframe sans warning
             df_f = df_mensuel[(df_mensuel[col_r] > 0) | (df_mensuel[col_s] > 0)].copy()
             axes[row, col].scatter(df_f[col_r], df_f[col_s], color=color, alpha=0.8, edgecolor='black', s=60)
             m = max(df_f[col_r].max(), df_f[col_s].max())
             if pd.notna(m) and m > 0: axes[row, col].plot([0, m], [0, m], 'r--', label='Idéal')
             axes[row, col].set_title(title, fontweight='bold'); axes[row, col].set_xlabel('Sibelga'); axes[row, col].set_ylabel('Streamlit')
             
-            # Annotation des 5 pires erreurs en MWh
             df_f['Err_Abs_Locale'] = (df_f[col_s] - df_f[col_r]).abs()
             top5 = df_f.sort_values(by='Err_Abs_Locale', ascending=False).head(5)
             
             for _, r_data in top5.iterrows():
-                # On tronque le nom à 15 caractères pour ne pas surcharger le graphique
                 axes[row, col].annotate(r_data['Proprietaire'][:15], 
                                         (r_data[col_r], r_data[col_s]), 
                                         fontsize=9, xytext=(5,5), textcoords='offset points')
