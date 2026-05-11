@@ -17,20 +17,64 @@ st.markdown("Choisissez votre précision, importez vos fichiers, puis explorez l
 # FONCTIONS DE LECTURE (SÉCURISÉES)
 # ==========================================
 @st.cache_data(show_spinner=False)
-def parser_sibelga_15min(fichiers_bytes):
+def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
     df_list = []
-    for f in fichiers_bytes:
-        df_r = pd.read_excel(io.BytesIO(f))
-        df_r['Datetime'] = pd.to_datetime(df_r['Date Début']).dt.tz_localize(None)
-        df_r['EAN'] = df_r['EAN'].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
-        df_r['Volume (kWh)'] = pd.to_numeric(df_r['Volume (kWh)'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+    for f_bytes, f_nom in zip(fichiers_bytes, noms_fichiers):
+        # 1. OPTIMISATION VITESSE (Lit le CSV si possible, sinon Excel)
+        if f_nom.lower().endswith('.csv'):
+            try:
+                df_r = pd.read_csv(io.BytesIO(f_bytes), sep=';', low_memory=False)
+                if len(df_r.columns) < 3: 
+                    df_r = pd.read_csv(io.BytesIO(f_bytes), sep=',', low_memory=False)
+            except:
+                df_r = pd.read_csv(io.BytesIO(f_bytes), sep=',', low_memory=False)
+        else:
+            df_r = pd.read_excel(io.BytesIO(f_bytes))
 
-        df_piv = df_r.pivot_table(index=['Datetime', 'EAN'], columns='Type de volume', values='Volume (kWh)', aggfunc='sum').reset_index()
+        # 2. DÉTECTION AVEUGLE DES COLONNES
+        colonnes = [str(c).lower().replace('é', 'e').strip() for c in df_r.columns]
+        df_r.columns = colonnes
 
-        for col in ['Consommation Partagée', 'Consommation Réseau', 'Injection Partagée', 'Injection Réseau']:
-            if col not in df_piv.columns: df_piv[col] = 0.0
+        c_date = next((c for c in colonnes if ('date' in c and 'debut' in c) or 'fromdate' in c or 'periode' in c), None)
+        c_ean = next((c for c in colonnes if 'ean' in c), None)
+        c_vol = next((c for c in colonnes if 'volume' in c), None)
+        c_type = next((c for c in colonnes if 'type' in c and 'volume' in c), None)
 
-        df_list.append(df_piv)
+        if not all([c_date, c_ean, c_vol, c_type]):
+            continue # Ignore ce fichier, ce n'est pas un vrai fichier Sibelga
+
+        # 3. NETTOYAGE
+        df_r['Datetime'] = pd.to_datetime(df_r[c_date], errors='coerce').dt.tz_localize(None)
+        df_r = df_r.dropna(subset=['Datetime']) # Retire les lignes bizarres/vides
+        df_r['EAN'] = df_r[c_ean].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+        df_r['Volume (kWh)'] = pd.to_numeric(df_r[c_vol].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+
+        # 4. PIVOT
+        df_piv = df_r.pivot_table(index=['Datetime', 'EAN'], columns=c_type, values='Volume (kWh)', aggfunc='sum').reset_index()
+
+        # 5. RE-NOMMAGE SÉCURISÉ DES COLONNES
+        piv_cols = [str(c).lower().replace('é', 'e').strip() for c in df_piv.columns]
+        df_piv.columns = piv_cols
+        
+        result = pd.DataFrame({'Datetime': df_piv['datetime'], 'EAN': df_piv['ean']})
+        
+        def get_col(mots_cles):
+            col = next((c for c in piv_cols if all(m in c for m in mots_cles)), None)
+            return df_piv[col] if col else 0.0
+
+        result['Consommation Partagée'] = get_col(['partage', 'consomm'])
+        if isinstance(result['Consommation Partagée'], float): result['Consommation Partagée'] = get_col(['partage', 'prelev'])
+        
+        result['Consommation Réseau'] = get_col(['reseau', 'consomm'])
+        if isinstance(result['Consommation Réseau'], float): result['Consommation Réseau'] = get_col(['reseau', 'prelev'])
+        if isinstance(result['Consommation Réseau'], float): result['Consommation Réseau'] = get_col(['complementaire', 'consomm'])
+
+        result['Injection Partagée'] = get_col(['partage', 'inject'])
+        result['Injection Réseau'] = get_col(['reseau', 'inject'])
+        if isinstance(result['Injection Réseau'], float): result['Injection Réseau'] = get_col(['residuel', 'inject'])
+
+        df_list.append(result)
+        
     return pd.concat(df_list) if df_list else pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
@@ -74,9 +118,9 @@ st.sidebar.header("📁 2. Import des fichiers")
 fichier_contacts = st.sidebar.file_uploader("1. Contacts Odoo (Excel/CSV)", type=['xlsx', 'csv'])
 
 if mode_precision == "Analyse Mensuelle (Rapide)":
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga MENSUELS", type=['xlsx', 'csv'], accept_multiple_files=True)
 else:
-    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN", type=['xlsx'], accept_multiple_files=True)
+    fichiers_sibelga = st.sidebar.file_uploader("2. Fichiers Sibelga 15-MIN", type=['xlsx', 'csv'], accept_multiple_files=True)
 
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
@@ -227,9 +271,11 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 else: 
                     # --- 1. Sibelga 15-min ---
                     f_bytes_sib = [f.getvalue() for f in fichiers_sibelga]
-                    df_piv = parser_sibelga_15min(f_bytes_sib)
+                    f_noms_sib = [f.name for f in fichiers_sibelga]
+                    df_piv = parser_sibelga_15min(f_bytes_sib, f_noms_sib)
+                    
                     if df_piv.empty:
-                        st.error("Format 15-min Sibelga invalide.")
+                        st.error("Format 15-min Sibelga invalide ou colonnes introuvables.")
                         st.stop()
 
                     df_c = pd.merge(df_piv, df_contacts[cols_to_merge], left_on='EAN', right_on='Ean', how='left')
@@ -264,7 +310,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     cols_simu = ['Proprietaire', 'Join_Key', 'Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']
                     df_sim_to_merge = df_sim_final[cols_simu].groupby(['Proprietaire', 'Join_Key']).mean().reset_index()
 
-                    # On fusionne. La date absolue restera celle de Sibelga.
+                    # On fusionne. La date absolue restera celle de Sibelga (2026).
                     df_comparatif = pd.merge(df_reels_final, df_sim_to_merge, on=['Proprietaire', 'Join_Key'], how='left')
 
                     df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
