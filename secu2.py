@@ -628,11 +628,12 @@ if st.session_state.get('calcul_termine', False):
                 df_indiv['Axe_Temps'] = df_indiv['Datetime'].dt.normalize()
             else:
                 df_indiv['Axe_Temps'] = pd.to_datetime(df_indiv['Annee'].astype(str) + '-' + df_indiv['Mois'].astype(str) + '-01')
-
+                
             df_indiv_plot = df_indiv.groupby('Axe_Temps')[[
                 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 
                 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 
-                'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh'
+                'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh',
+                'Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh' # <--- LES VOICI !
             ]].sum().reset_index()
 
             if choix_kpi_indiv == "⚡ Conso Totale": c_r, c_s = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh'
