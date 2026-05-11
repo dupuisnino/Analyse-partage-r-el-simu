@@ -37,8 +37,10 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
 
         c_date = next((c for c in colonnes if ('date' in c and 'debut' in c) or 'fromdate' in c or 'periode' in c), None)
         c_ean = next((c for c in colonnes if 'ean' in c), None)
-        c_vol = next((c for c in colonnes if 'volume' in c), None)
+        
+        # CORRECTION ICI : On trouve d'abord le "Type", puis on dit que le "Volume" est l'AUTRE colonne.
         c_type = next((c for c in colonnes if 'type' in c and 'volume' in c), None)
+        c_vol = next((c for c in colonnes if 'volume' in c and c != c_type), None)
 
         if not all([c_date, c_ean, c_vol, c_type]):
             continue # Ignore ce fichier, ce n'est pas un vrai fichier Sibelga
