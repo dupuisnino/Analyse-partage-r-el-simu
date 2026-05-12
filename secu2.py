@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 import io
-import gc  # Pour vider la RAM et éviter les crashs
+import gc  # Le bouclier anti-crash mémoire
 
 # Configuration de la page web
 st.set_page_config(page_title="Audit Communauté d'Énergie", page_icon="⚡", layout="wide")
@@ -50,6 +50,8 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
         df_r['Datetime'] = pd.to_datetime(df_r[c_date], errors='coerce').dt.tz_localize(None)
         df_r = df_r.dropna(subset=['Datetime']) # Retire les lignes bizarres/vides
         df_r['EAN'] = df_r[c_ean].astype(str).str.replace(' ', '').str.replace(r'\.0$', '', regex=True).str.strip()
+        
+        # DOWNCAST : Divise la RAM nécessaire par 2
         df_r['Volume (kWh)'] = pd.to_numeric(df_r[c_vol].astype(str).str.replace(',', '.'), errors='coerce', downcast='float').fillna(0)
 
         # 4. PIVOT
@@ -80,9 +82,10 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
         
     return pd.concat(df_list) if df_list else pd.DataFrame()
 
+
 @st.cache_data(show_spinner=False)
 def parser_simu_15min(fichier_bytes):
-    # Lecture optimisée pour les gros CSV
+    # Lecture sécurisée et rapide du gros CSV
     try:
         df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=';', low_memory=False)
         if len(df_s.columns) < 3: 
@@ -92,49 +95,42 @@ def parser_simu_15min(fichier_bytes):
         
     df_s.columns = df_s.columns.str.strip()
     
-    # Prise de la colonne 0 peu importe son nom (qui contient les dates ISO)
+    # Prise de la colonne 0 (les dates) peu importe son nom
     col_date = df_s.columns[0]
     df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
 
-    # Nouveaux suffixes du fichier de Clément
-    suffixes = [
-        '_residual off-take', '_residual injection', '_shared volume from community', 
-        '_shared volume to community', '_commodity costs from grid', 
-        '_selling revenues from grid injection', '_selling revenues from shared volume', 
-        '_commodity costs from shared volume', '_enr contribution after community'
-    ]
-
-    p_simu = set()
+    # Détection intelligente des membres (Cherche tout ce qui précède un mot clé technique)
+    membres_simu = set()
     for col in df_s.columns:
-        for suff in suffixes:
-            if col.endswith(suff):
-                p_simu.add(col[:-len(suff)].strip())
-                break
+        if '_residual' in col:
+            membres_simu.add(col.split('_residual')[0].strip())
+        elif '_shared' in col:
+            membres_simu.add(col.split('_shared')[0].strip())
 
     d_list = []
-    for p in p_simu:
+    for p in membres_simu:
         temp = pd.DataFrame({'Datetime': df_s['Datetime'], 'Nom_Streamlit': p})
         
-        # Extracteur sécurisé (gère les virgules européennes et allège la mémoire)
-        def extract_num(col_name):
-            if col_name in df_s.columns:
-                return pd.to_numeric(df_s[col_name].astype(str).str.replace(',', '.'), errors='coerce', downcast='float').fillna(0)
+        # Extracteur hyper-robuste : cherche le nom du membre ET un mot-clé précis, évite les erreurs d'espaces
+        def extract_num(keyword):
+            for col in df_s.columns:
+                if col.startswith(p) and keyword in col:
+                    return pd.to_numeric(df_s[col].astype(str).str.replace(',', '.'), errors='coerce', downcast='float').fillna(0)
             return 0.0
             
-        # Si le fichier est déjà en MWh, on divise par 1.0 (Sinon 1000.0 pour kWh, 4000.0 pour W)
-        diviseur = 1.0 
-
-        temp['Sim_Conso_Totale_MWh'] = extract_num(f"{p}_residual off-take") / diviseur
-        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num(f"{p}_residual injection")) / diviseur
-        temp['Sim_Conso_Partagee_MWh'] = extract_num(f"{p}_shared volume from community") / diviseur
-        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num(f"{p}_shared volume to community")) / diviseur
+        diviseur_vol = 1000.0 # Transformation des kWh en MWh
         
-        # Ajout des données financières pour plus tard
-        temp['Sim_Cout_Reseau_Euro'] = extract_num(f"{p}_commodity costs from grid")
-        temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num(f"{p}_selling revenues from grid injection"))
-        temp['Sim_Cout_CE_Euro'] = extract_num(f"{p}_commodity costs from shared volume")
-        temp['Sim_Revenu_CE_Euro'] = np.abs(extract_num(f"{p}_selling revenues from shared volume"))
-        temp['Sim_ENR_Euro'] = extract_num(f"{p}_enr contribution after community")
+        temp['Sim_Conso_Totale_MWh'] = extract_num('residual off-take') / diviseur_vol
+        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('residual injection')) / diviseur_vol
+        temp['Sim_Conso_Partagee_MWh'] = extract_num('shared volume from community') / diviseur_vol
+        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('shared volume to community')) / diviseur_vol
+        
+        # Données Financières pour la génération de rapport (En euros purs, on ne divise pas)
+        temp['Sim_Cout_Reseau_Euro'] = extract_num('commodity costs from grid')
+        temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('selling revenues from grid injection'))
+        temp['Sim_Cout_CE_Euro'] = extract_num('commodity costs from shared volume')
+        temp['Sim_Revenu_CE_Euro'] = np.abs(extract_num('selling revenues from shared volume'))
+        temp['Sim_ENR_Euro'] = extract_num('enr contribution after community')
 
         d_list.append(temp)
 
@@ -191,7 +187,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
                 mapping_groupe = dict(zip(df_mapping[mask_groupe]['Nom_Reel'], df_mapping[mask_groupe]['Super_Groupe']))
 
-                # --- B. CONTACTS ---
+                # --- B. CONTACTS (Sécurisé CSV/Excel) ---
                 if fichier_contacts.name.lower().endswith('.csv'):
                     try:
                         df_contacts = pd.read_csv(fichier_contacts, sep=';', dtype=str)
@@ -286,19 +282,14 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_reels_all = pd.concat(df_reels_list)
                     df_reels_final = df_reels_all.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                    # Simu Mensuelle (Adapté aux nouveaux noms)
                     master_calendar = df_reels_all[['Mois', 'Annee', 'Sort_Key']].drop_duplicates()
                     df_s = pd.read_csv(fichier_simu)
-                    df_s['Mois_Simu'] = pd.to_datetime(df_s.iloc[:, 0], errors='coerce').dt.month
+                    df_s['Mois_Simu'] = pd.to_datetime(df_s['Unnamed: 0'], errors='coerce').dt.month
                     df_s = df_s[df_s['Mois_Simu'].isin(df_reels_all['Mois'].unique().tolist())]
 
-                    suffixes = ['_residual off-take', '_residual injection', '_shared volume from community', '_shared volume to community']
-                    p_simu = set()
-                    for col in df_s.columns:
-                        for suff in suffixes:
-                            if col.endswith(suff):
-                                p_simu.add(col[:-len(suff)].strip())
-                                break
+                    p_bruts = set(c.split('_')[0] for c in df_s.columns if c not in ['Unnamed: 0', 'Mois_Simu'])
+                    tech = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n'}
+                    p_simu = {p.strip() for p in p_bruts if p.strip().lower() not in tech}
 
                     d_simu = []
                     for m_encours, group in df_s.groupby('Mois_Simu'):
@@ -306,10 +297,10 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                         for p in p_simu:
                             d_simu.append({
                                 'Mois': m_encours, 'Nom_Streamlit': p,
-                                'Sim_Conso_Totale_MWh': s_simu.get(f"{p}_residual off-take", 0),
-                                'Sim_Prod_Totale_MWh': abs(s_simu.get(f"{p}_residual injection", 0)),
-                                'Sim_Conso_Partagee_MWh': s_simu.get(f"{p}_shared volume from community", 0),
-                                'Sim_Prod_Partagee_MWh': abs(s_simu.get(f"{p}_shared volume to community", 0))
+                                'Sim_Conso_Partagee_MWh': s_simu.get(f"{p}_shared_volume_from_community", 0) / 4000.0,
+                                'Sim_Conso_Totale_MWh': s_simu.get(f"{p}_residual_consumption_bc", 0) / 4000.0,
+                                'Sim_Prod_Partagee_MWh': abs(s_simu.get(f"{p}_shared_volume_to_community", 0)) / 4000.0,
+                                'Sim_Prod_Totale_MWh': abs(s_simu.get(f"{p}_injection_bc", 0)) / 4000.0
                             })
                     df_sim_agg = pd.DataFrame(d_simu)
                     df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
@@ -324,7 +315,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_comparatif['Date_Courbe'] = pd.to_datetime(df_comparatif['Annee'].astype(str) + '-' + df_comparatif['Mois'].astype(str) + '-01')
 
                 # ==========================================
-                # MODE 15-MINUTES (UNIVERSAL MERGE ORIGINAL)
+                # MODE 15-MINUTES (UNIVERSAL MERGE)
                 # ==========================================
                 else: 
                     # --- 1. Sibelga 15-min ---
@@ -419,8 +410,11 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 cols_ref = ['Groupe_Odoo', 'Entry Point Owner', 'Ean'] if 'Entry Point Owner' in df_contacts.columns else ['Groupe_Odoo', 'Nom', 'Ean']
                 st.session_state['df_contacts_ref'] = df_contacts[cols_ref].copy()
                 st.session_state['calcul_termine'] = True
-                
-                # VIDAGE RAM POUR EVITER LES CRASHS
+
+                # VIDAGE RAM POUR EVITER LES CRASHS (Détruit les objets intermédiaires)
+                variables_a_purger = ['df_reels_all', 'df_reels_final', 'df_sim_raw', 'df_sim_final', 'df_sim_to_merge', 'df_piv', 'df_s']
+                for var in variables_a_purger:
+                    if var in locals(): del locals()[var]
                 gc.collect()
 
             except Exception as e:
