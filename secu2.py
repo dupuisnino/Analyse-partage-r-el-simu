@@ -38,7 +38,6 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
         c_date = next((c for c in colonnes if ('date' in c and 'debut' in c) or 'fromdate' in c or 'periode' in c), None)
         c_ean = next((c for c in colonnes if 'ean' in c), None)
         
-        # CORRECTION ICI : On trouve d'abord le "Type", puis on dit que le "Volume" est l'AUTRE colonne.
         c_type = next((c for c in colonnes if 'type' in c and 'volume' in c), None)
         c_vol = next((c for c in colonnes if 'volume' in c and c != c_type), None)
 
@@ -81,7 +80,7 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
 
 @st.cache_data(show_spinner=False)
 def parser_simu_15min(fichier_bytes):
-    # 1. OPTIMISATION VITESSE ET LECTURE SÉCURISÉE (Gère les CSV européens)
+    # 1. OPTIMISATION VITESSE ET LECTURE SÉCURISÉE
     try:
         df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=';', low_memory=False)
         if len(df_s.columns) < 3: 
@@ -91,44 +90,27 @@ def parser_simu_15min(fichier_bytes):
         
     df_s.columns = df_s.columns.str.strip()
     
-    # 2. Les 9 suffixes exacts de Clément
+    # 2. LECTURE BRUTALE DE LA DATE (1ère colonne, quel que soit son nom)
+    df_s['Datetime'] = pd.to_datetime(df_s.iloc[:, 0], errors='coerce').dt.tz_localize(None)
+
+    # Sécurité absolue : si le format date a raté, on génère une année parfaite au 1/4h
+    if df_s['Datetime'].isna().sum() > (len(df_s) * 0.5):
+        df_s['Datetime'] = pd.date_range(start='2024-01-01 00:00:00', periods=len(df_s), freq='15min')
+
+    # 3. Les 9 suffixes exacts de Clément
     suffixes = [
-        '_residual off-take', 
-        '_residual injection', 
-        '_shared volume from community', 
-        '_shared volume to community',
-        '_commodity costs from grid',
-        '_selling revenues from grid injection',
-        '_selling revenues from shared volume',
-        '_commodity costs from shared volume',
-        '_enr contribution after community'
+        '_residual off-take', '_residual injection', '_shared volume from community', 
+        '_shared volume to community', '_commodity costs from grid',
+        '_selling revenues from grid injection', '_selling revenues from shared volume',
+        '_commodity costs from shared volume', '_enr contribution after community'
     ]
-    
-    # 3. DÉTECTION INTELLIGENTE DE LA COLONNE DATE
-    col_date = None
-    for c in df_s.columns:
-        if any(x in str(c).lower() for x in ['date', 'time', 'unnamed', 'index']):
-            col_date = c
-            break
-    
-    # Si aucun mot-clé n'est trouvé, on prend la première colonne qui n'a pas de suffixe d'énergie
-    if col_date is None:
-        for c in df_s.columns:
-            if not any(c.endswith(s) for s in suffixes):
-                col_date = c
-                break
-                
-    if col_date is None:
-        col_date = df_s.columns[0] # Sécurité ultime
 
-    df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
-
-    # 4. IDENTIFICATION DES MEMBRES (Ignore les "_" dans les noms d'origine)
+    # 4. IDENTIFICATION DES MEMBRES
     membres_simu = set()
     for col in df_s.columns:
         for suff in suffixes:
             if col.endswith(suff):
-                membres_simu.add(col[:-len(suff)].strip()) # On coupe le suffixe et on nettoie les espaces
+                membres_simu.add(col[:-len(suff)].strip())
                 break
 
     # 5. LA "FONTE" (Format Large -> Format Long)
@@ -148,7 +130,7 @@ def parser_simu_15min(fichier_bytes):
         temp['Sim_Conso_Partagee_MWh'] = extract_num('_shared volume from community')
         temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('_shared volume to community'))
         
-        # --- FINANCES (Prêt pour le prochain rapport PDF) ---
+        # --- FINANCES ---
         temp['Sim_Cout_Reseau_Euro'] = extract_num('_commodity costs from grid')
         temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('_selling revenues from grid injection'))
         temp['Sim_Cout_CE_Euro'] = extract_num('_commodity costs from shared volume')
@@ -157,7 +139,6 @@ def parser_simu_15min(fichier_bytes):
 
         d_list.append(temp)
 
-    # 6. Assemblage final
     return pd.concat(d_list) if d_list else pd.DataFrame()
 
 # ==========================================
@@ -176,7 +157,6 @@ else:
 
 fichier_mapping = st.sidebar.file_uploader("3. Fichier de Mapping", type=['xlsx'])
 fichier_simu = st.sidebar.file_uploader("4. Simulation Streamlit (CSV)", type=['csv'])
-
 
 # ==========================================
 # 2. MOTEUR DE CALCUL CENTRAL
@@ -211,8 +191,19 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 mask_groupe = ~df_mapping['Critère de liaison'].isin(['EAN', 'Entry Point Owner'])
                 mapping_groupe = dict(zip(df_mapping[mask_groupe]['Nom_Reel'], df_mapping[mask_groupe]['Super_Groupe']))
 
-                # --- B. CONTACTS ---
-                df_contacts = pd.read_excel(fichier_contacts, dtype=str)
+                # --- B. CONTACTS (Blindé CSV/Excel) ---
+                if fichier_contacts.name.lower().endswith('.csv'):
+                    try:
+                        df_contacts = pd.read_csv(fichier_contacts, sep=';', dtype=str)
+                        if len(df_contacts.columns) < 2:
+                            fichier_contacts.seek(0)
+                            df_contacts = pd.read_csv(fichier_contacts, sep=',', dtype=str)
+                    except:
+                        fichier_contacts.seek(0)
+                        df_contacts = pd.read_csv(fichier_contacts, sep=',', dtype=str)
+                else:
+                    df_contacts = pd.read_excel(fichier_contacts, dtype=str)
+
                 est_un_titre = df_contacts['Ean'].isna() & df_contacts['Nom'].astype(str).str.contains(r'\(\d+\)$')
                 df_contacts['Groupe_Odoo'] = np.where(est_un_titre, df_contacts['Nom'].astype(str).str.replace(r' \(\d+\)$', '', regex=True).str.strip(), np.nan)
                 df_contacts['Groupe_Odoo'] = df_contacts['Groupe_Odoo'].ffill()
@@ -232,9 +223,19 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_reels_list = []
                     for fact in fichiers_sibelga:
                         fact.seek(0)
-                        df_r = pd.read_excel(fact, dtype=str)
+                        if fact.name.lower().endswith('.csv'):
+                            try:
+                                df_r = pd.read_csv(fact, sep=';', dtype=str)
+                                if len(df_r.columns) < 3:
+                                    fact.seek(0)
+                                    df_r = pd.read_csv(fact, sep=',', dtype=str)
+                            except:
+                                fact.seek(0)
+                                df_r = pd.read_csv(fact, sep=',', dtype=str)
+                        else:
+                            df_r = pd.read_excel(fact, dtype=str)
+
                         c_locales = df_r.columns.tolist()
-                        
                         def trv(opt, exc):
                             for m in opt:
                                 for c in c_locales:
@@ -284,7 +285,6 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_reels_all = pd.concat(df_reels_list)
                     df_reels_final = df_reels_all.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
-                    # Simu Mensuelle
                     master_calendar = df_reels_all[['Mois', 'Annee', 'Sort_Key']].drop_duplicates()
                     df_s = pd.read_csv(fichier_simu)
                     df_s['Mois_Simu'] = pd.to_datetime(df_s['Unnamed: 0'], errors='coerce').dt.month
@@ -318,7 +318,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_comparatif['Date_Courbe'] = pd.to_datetime(df_comparatif['Annee'].astype(str) + '-' + df_comparatif['Mois'].astype(str) + '-01')
 
                 # ==========================================
-                # MODE 15-MINUTES (UNIVERSAL MERGE)
+                # MODE 15-MINUTES (UNIVERSAL MERGE AMÉLIORÉ)
                 # ==========================================
                 else: 
                     # --- 1. Sibelga 15-min ---
@@ -353,19 +353,23 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_sim_raw['Proprietaire'] = df_sim_raw['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_raw['Nom_Streamlit'])
                     df_sim_final = df_sim_raw.groupby(['Proprietaire', 'Datetime'])[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
-                    # --- 3. L'ASTUCE DU SIÈCLE : FUSION UNIVERSELLE (Ignore l'année) ---
-                    # On crée une clé unique "Mois-Jour Heure:Minute"
+                    # --- 3. FUSION UNIVERSELLE (OUTER JOIN) ---
                     df_reels_final['Join_Key'] = df_reels_final['Datetime'].dt.strftime('%m-%d %H:%M')
                     df_sim_final['Join_Key'] = df_sim_final['Datetime'].dt.strftime('%m-%d %H:%M')
 
-                    # On sécurise la simulation (Moyenne en cas de doublon rare lié au changement d'heure)
                     cols_simu = ['Proprietaire', 'Join_Key', 'Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']
                     df_sim_to_merge = df_sim_final[cols_simu].groupby(['Proprietaire', 'Join_Key']).mean().reset_index()
 
-                    # On fusionne. La date absolue restera celle de Sibelga (2026).
-                    df_comparatif = pd.merge(df_reels_final, df_sim_to_merge, on=['Proprietaire', 'Join_Key'], how='left')
+                    # 🔥 FUSION OUTER : Force l'affichage même s'ils ne s'alignent pas
+                    df_comparatif = pd.merge(df_reels_final, df_sim_to_merge, on=['Proprietaire', 'Join_Key'], how='outer')
 
-                    df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna()
+                    # Reconstruire le temps manquant (pour les membres qui n'ont que de la Simu)
+                    if df_comparatif['Datetime'].isna().any():
+                        df_comparatif['Datetime'] = df_comparatif['Datetime'].fillna(
+                            pd.to_datetime('2024-' + df_comparatif['Join_Key'], format='%Y-%m-%d %H:%M', errors='coerce')
+                        )
+
+                    df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna() & (df_comparatif['Reel_Conso_Totale_MWh'] > 0)
                     df_comparatif['Mois'] = df_comparatif['Datetime'].dt.month
                     df_comparatif['Annee'] = df_comparatif['Datetime'].dt.year
                     df_comparatif['Sort_Key'] = df_comparatif['Annee'] * 100 + df_comparatif['Mois']
@@ -389,7 +393,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 fact_jamais_sim = list(m_factures - m_simules)
                 
                 if fact_jamais_sim: alertes.append(("warning", f"**Facturés mais JAMAIS simulés (Ajoutés avec simu=0) :** {', '.join(fact_jamais_sim)}"))
-                if simu_jamais_fact: alertes.append(("warning", f"**Simulés mais SANS AUCUNE facture (Ignorés) :** {', '.join(simu_jamais_fact)}"))
+                if simu_jamais_fact: alertes.append(("warning", f"**Simulés mais SANS AUCUNE facture (Ignorés dans les totaux) :** {', '.join(simu_jamais_fact)}"))
                 if not alertes: alertes.append(("success", "✅ Bases de données parfaitement alignées sur la période !"))
 
                 # Erreurs
@@ -400,7 +404,8 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 noms_mois = {1:'Jan', 2:'Fév', 3:'Mar', 4:'Avr', 5:'Mai', 6:'Juin', 7:'Juil', 8:'Août', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Déc'}
                 df_comparatif['Periode_Str'] = df_comparatif['Mois'].map(noms_mois) + " " + df_comparatif['Annee'].astype(int).astype(str)
 
-                df_analyse = df_comparatif[~df_comparatif['Proprietaire'].isin(simu_jamais_fact)].copy()
+                # 🔥 Retrait du filtre strict pour permettre l'exploration totale
+                df_analyse = df_comparatif.copy()
 
                 # SAUVEGARDE EN MEMOIRE
                 st.session_state['df_comparatif'] = df_comparatif
@@ -471,7 +476,7 @@ if st.session_state.get('calcul_termine', False):
         periodes_dispos = df_mensuel_agg[['Sort_Key', 'Periode_Str']].drop_duplicates().sort_values('Sort_Key')
         mois_cible_str = col_choix2.selectbox("Sélectionnez le mois à analyser en détail :", periodes_dispos['Periode_Str'].tolist())
         
-        df_mensuel = df_mensuel_agg[(df_mensuel_agg['Periode_Str'] == mois_cible_str) & (df_mensuel_agg['Has_Facture'] > 0)].copy()
+        df_mensuel = df_mensuel_agg[(df_mensuel_agg['Periode_Str'] == mois_cible_str)].copy()
         
         st.divider()
         st.subheader(f"🌍 Analyse Globale ({mois_cible_str})")
@@ -590,7 +595,6 @@ if st.session_state.get('calcul_termine', False):
         n_mois = len(df_mensuel_agg['Sort_Key'].unique())
         fig_width = max(14, n_mois * 0.9)
 
-        # Création de l'axe temporel dynamique
         df_trend_base = df_analyse_brut[df_analyse_brut['Has_Facture'] == True].copy()
         
         if granularite_globale == "Par Heure" and 'Datetime' in df_trend_base.columns:
@@ -651,7 +655,8 @@ if st.session_state.get('calcul_termine', False):
         st.subheader("👤 Analyse Individuelle")
         membre_choisi = st.selectbox("Sélectionnez un membre :", sorted(df_analyse_brut['Proprietaire'].unique()))
         
-        df_indiv = df_analyse_brut[(df_analyse_brut['Proprietaire'] == membre_choisi) & (df_analyse_brut['Has_Facture'] == True)].copy()
+        # 🔥 MODIFICATION : On retire le filtre "Has_Facture" ici pour pouvoir TOUJOURS voir la courbe, même sans Sibelga
+        df_indiv = df_analyse_brut[(df_analyse_brut['Proprietaire'] == membre_choisi)].copy()
         
         if not df_indiv.empty:
             
@@ -683,7 +688,7 @@ if st.session_state.get('calcul_termine', False):
                 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 
                 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 
                 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh',
-                'Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh' # <--- LES VOICI !
+                'Reel_Prod_Partagee_MWh', 'Sim_Prod_Partagee_MWh'
             ]].sum().reset_index()
 
             if choix_kpi_indiv == "⚡ Conso Totale": c_r, c_s = 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh'
@@ -706,7 +711,7 @@ if st.session_state.get('calcul_termine', False):
             ax_indiv.legend()
             col_i2.pyplot(fig_indiv, use_container_width=False)
         else:
-            st.info("Ce membre n'a aucune facture enregistrée sur la période sélectionnée.")
+            st.info("Ce membre n'a aucune donnée enregistrée sur la période sélectionnée.")
 
     # =========================================================
     # 🔗 ÉDITEUR DE MAPPING INTERACTIF
