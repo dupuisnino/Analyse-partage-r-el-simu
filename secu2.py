@@ -81,33 +81,70 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
 
 @st.cache_data(show_spinner=False)
 def parser_simu_15min(fichier_bytes):
-    df_s = pd.read_csv(io.BytesIO(fichier_bytes))
+    # 1. Lecture du gros fichier CSV
+    try:
+        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=None, engine='python') # Détecte auto la virgule ou le point-virgule
+    except:
+        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=',')
+        
     df_s.columns = df_s.columns.str.strip()
     
-    # Prise de la colonne 0 peu importe son nom
+    # 2. Date
     col_date = df_s.columns[0]
     df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
 
-    p_bruts = set(c.split('_')[0] for c in df_s.columns if '_' in c)
-    tech = {'external', 'grid', 'injection', 'internal', 'remaining', 'residual', 'shared', 'community', 'n', 'pv', 'total', 'self', 'tariff', 'period', 'battery', 'allocation', 'consumed', 'repartition', 'Unnamed: 0'}
-    p_simu = {p.strip() for p in p_bruts if p.strip().lower() not in tech}
+    # 3. Les 9 suffixes exacts de Clément
+    suffixes = [
+        '_residual off-take', 
+        '_residual injection', 
+        '_shared volume from community', 
+        '_shared volume to community',
+        '_commodity costs from grid',
+        '_selling revenues from grid injection',
+        '_selling revenues from shared volume',
+        '_commodity costs from shared volume',
+        '_enr contribution after community'
+    ]
 
+    # 4. Identification intelligente des membres (ignore les _ dans les noms)
+    membres_simu = set()
+    for col in df_s.columns:
+        for suff in suffixes:
+            if col.endswith(suff):
+                membres_simu.add(col[:-len(suff)]) # Garde juste le nom avant le suffixe
+                break
+
+    # 5. La "Fonte" (Format Large -> Format Long)
     d_list = []
-    for p in p_simu:
+    for p in membres_simu:
         temp = pd.DataFrame({'Datetime': df_s['Datetime'], 'Nom_Streamlit': p})
         
-        # Extracteur sécurisé (gère les virgules européennes)
-        def extract_num(col_name):
+        def extract_num(suffix):
+            col_name = f"{p}{suffix}"
             if col_name in df_s.columns:
                 return pd.to_numeric(df_s[col_name].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
             return 0.0
             
-        temp['Sim_Conso_Partagee_MWh'] = extract_num(f"{p}_shared_volume_from_community") / 4000.0
-        temp['Sim_Conso_Totale_MWh'] = extract_num(f"{p}_residual_consumption_bc") / 4000.0
-        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num(f"{p}_shared_volume_to_community")) / 4000.0
-        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num(f"{p}_injection_bc")) / 4000.0
+        # --- VOLUMES ---
+        # ATTENTION UNITÉ : Si Clément t'a bien mis des MWh directs, on divise par 1. 
+        # (Si un jour il remet des Watts, change le 1.0 par 4000.0)
+        diviseur_volume = 1.0 
+        
+        temp['Sim_Conso_Totale_MWh'] = extract_num('_residual off-take') / diviseur_volume
+        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('_residual injection')) / diviseur_volume
+        temp['Sim_Conso_Partagee_MWh'] = extract_num('_shared volume from community') / diviseur_volume
+        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('_shared volume to community')) / diviseur_volume
+        
+        # --- FINANCES (EUROS) ---
+        temp['Sim_Cout_Reseau_Euro'] = extract_num('_commodity costs from grid')
+        temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('_selling revenues from grid injection'))
+        temp['Sim_Cout_CE_Euro'] = extract_num('_commodity costs from shared volume')
+        temp['Sim_Revenu_CE_Euro'] = np.abs(extract_num('_selling revenues from shared volume'))
+        temp['Sim_ENR_Euro'] = extract_num('_enr contribution after community')
+
         d_list.append(temp)
 
+    # 6. Assemblage final ultra-rapide
     return pd.concat(d_list) if d_list else pd.DataFrame()
 
 # ==========================================
