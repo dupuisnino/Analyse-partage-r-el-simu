@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 import io
-import gc  # Ajout du Garbage Collector pour libérer la mémoire
+import gc
 
 # Configuration de la page web
 st.set_page_config(page_title="Audit Communauté d'Énergie", page_icon="⚡", layout="wide")
@@ -15,7 +15,7 @@ st.title("⚡ Audit Automatique : Réalité vs Simulation")
 st.markdown("Choisissez votre précision, importez vos fichiers, puis explorez les résultats.")
 
 # ==========================================
-# FONCTIONS DE LECTURE (SÉCURISÉES)
+# FONCTIONS DE LECTURE
 # ==========================================
 @st.cache_data(show_spinner=False)
 def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
@@ -48,7 +48,6 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
         df_r['Volume (kWh)'] = pd.to_numeric(df_r[c_vol].astype(str).str.replace(',', '.'), errors='coerce', downcast='float').fillna(0)
 
         df_piv = df_r.pivot_table(index=['Datetime', 'EAN'], columns=c_type, values='Volume (kWh)', aggfunc='sum').reset_index()
-
         piv_cols = [str(c).lower().replace('é', 'e').strip() for c in df_piv.columns]
         df_piv.columns = piv_cols
         
@@ -82,24 +81,16 @@ def parser_simu_15min(fichier_bytes):
         
     df_s.columns = df_s.columns.str.strip()
     
-    col_date = None
-    for c in df_s.columns:
-        if any(x in str(c).lower() for x in ['date', 'time', 'unnamed', 'index']):
-            col_date = c
-            break
-            
-    suffixes = ['_residual off-take', '_residual injection', '_shared volume from community', '_shared volume to community', '_commodity costs from grid', '_selling revenues from grid injection', '_selling revenues from shared volume', '_commodity costs from shared volume', '_enr contribution after community']
+    # FORCAGE : La date est toujours la toute première colonne du fichier !
+    df_s['Datetime'] = pd.to_datetime(df_s.iloc[:, 0], errors='coerce').dt.tz_localize(None)
+
+    suffixes = [
+        '_residual off-take', '_residual injection', '_shared volume from community', 
+        '_shared volume to community', '_commodity costs from grid', 
+        '_selling revenues from grid injection', '_selling revenues from shared volume', 
+        '_commodity costs from shared volume', '_enr contribution after community'
+    ]
     
-    if col_date is None:
-        for c in df_s.columns:
-            if not any(c.endswith(s) for s in suffixes):
-                col_date = c
-                break
-    if col_date is None:
-        col_date = df_s.columns[0]
-
-    df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
-
     membres_simu = set()
     for col in df_s.columns:
         for suff in suffixes:
@@ -120,6 +111,8 @@ def parser_simu_15min(fichier_bytes):
         temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('_residual injection'))
         temp['Sim_Conso_Partagee_MWh'] = extract_num('_shared volume from community')
         temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('_shared volume to community'))
+        
+        # Prêt pour les finances !
         temp['Sim_Cout_Reseau_Euro'] = extract_num('_commodity costs from grid')
         temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('_selling revenues from grid injection'))
         temp['Sim_Cout_CE_Euro'] = extract_num('_commodity costs from shared volume')
@@ -305,18 +298,17 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_comparatif = pd.merge(df_comparatif, df_sim_final, on=['Proprietaire', 'Mois'], how='left')
                     df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna() | df_comparatif['Reel_Prod_Totale_MWh'].notna()
                     
-                    # Remplissage sécurisé (uniquement les maths)
                     cols_num = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']
                     for col in cols_num:
-                        if col in df_comparatif.columns:
-                            df_comparatif[col] = df_comparatif[col].fillna(0)
+                        if col in df_comparatif.columns: df_comparatif[col] = df_comparatif[col].fillna(0)
 
-                    df_comparatif['Datetime_Mois'] = pd.to_datetime(df_comparatif['Annee'].astype(str) + '-' + df_comparatif['Mois'].astype(str) + '-01')
+                    df_comparatif['Datetime_Graphique'] = pd.to_datetime(df_comparatif['Annee'].astype(str) + '-' + df_comparatif['Mois'].astype(str) + '-01')
 
                 # ==========================================
-                # MODE 15-MINUTES (FUSION UNIVERSELLE BÉTON)
+                # MODE 15-MINUTES (NOUVELLE FUSION ULTRA-RAPIDE)
                 # ==========================================
                 else: 
+                    # --- 1. Sibelga 15-min ---
                     f_bytes_sib = [f.getvalue() for f in fichiers_sibelga]
                     f_noms_sib = [f.name for f in fichiers_sibelga]
                     df_piv = parser_sibelga_15min(f_bytes_sib, f_noms_sib)
@@ -341,44 +333,37 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     df_reels_all = df_c 
                     df_reels_final = df_c.groupby(['Proprietaire', 'Datetime'])[['Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']].sum().reset_index()
 
+                    # --- 2. Simu 15-min ---
                     df_sim_raw = parser_simu_15min(fichier_simu.getvalue())
                     p_simu = df_sim_raw['Nom_Streamlit'].unique() if not df_sim_raw.empty else []
                     
                     df_sim_raw['Proprietaire'] = df_sim_raw['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_raw['Nom_Streamlit'])
                     df_sim_final = df_sim_raw.groupby(['Proprietaire', 'Datetime'])[['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']].sum().reset_index()
 
-                    # CRÉATION DE LA CLÉ DE FUSION (Mois-Jour Heure:Minute)
+                    # 🔥 RECADRAGE DE LA SIMULATION : On ne garde que les mois envoyés dans Sibelga
+                    mois_sibelga = df_reels_final['Datetime'].dt.month.unique()
+                    df_sim_final = df_sim_final[df_sim_final['Datetime'].dt.month.isin(mois_sibelga)]
+
+                    # --- 3. ALIGNEMENT TEMPOREL PAR CONCATÉNATION (Fini les crashs mémoire !) ---
                     df_reels_final['Join_Key'] = df_reels_final['Datetime'].dt.strftime('%m-%d %H:%M')
                     df_sim_final['Join_Key'] = df_sim_final['Datetime'].dt.strftime('%m-%d %H:%M')
 
-                    cols_simu = ['Proprietaire', 'Join_Key', 'Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh']
-                    df_sim_to_merge = df_sim_final[cols_simu].groupby(['Proprietaire', 'Join_Key']).mean().reset_index()
-
-                    # FUSION OUTER (Force Sibelga ET Simu à s'afficher côte à côte)
-                    df_comparatif = pd.merge(df_reels_final, df_sim_to_merge, on=['Proprietaire', 'Join_Key'], how='outer')
-
-                    # On sait qu'il y a Sibelga si Reel_Conso OU Reel_Prod est rempli
-                    df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna() | df_comparatif['Reel_Prod_Totale_MWh'].notna()
-
-                    # NETTOYAGE EXCLUSIVEMENT SUR LES CHIFFRES (On ne touche pas aux dates)
-                    cols_num = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Reel_Conso_Partagee_MWh', 'Reel_Conso_Totale_MWh', 'Reel_Prod_Partagee_MWh', 'Reel_Prod_Totale_MWh']
-                    for col in cols_num:
-                        if col in df_comparatif.columns:
-                            df_comparatif[col] = df_comparatif[col].fillna(0)
-
-                    # CRÉATION DES 3 AXES DE TEMPS POUR LES BOUTONS DU GRAPHIQUE (Basé sur une année bissextile fictive parfaite)
-                    df_comparatif['Datetime_Exact'] = pd.to_datetime('2024-' + df_comparatif['Join_Key'], format='%Y-%m-%d %H:%M', errors='coerce')
+                    # On empile les deux tableaux l'un sur l'autre (très léger en mémoire)
+                    df_concat = pd.concat([df_reels_final.drop(columns=['Datetime']), df_sim_final.drop(columns=['Datetime'])], ignore_index=True)
                     
-                    df_comparatif['Datetime_Heure'] = df_comparatif['Datetime_Exact'].dt.floor('h')
-                    df_comparatif['Datetime_Jour'] = df_comparatif['Datetime_Exact'].dt.floor('D')
-                    df_comparatif['Datetime_Mois'] = pd.to_datetime(df_comparatif['Datetime_Exact'].dt.strftime('%Y-%m-01'))
+                    # On additionne les lignes qui se superposent (Sibelga + Simu)
+                    df_comparatif = df_concat.groupby(['Proprietaire', 'Join_Key'], as_index=False).sum()
 
-                    df_comparatif['Mois'] = df_comparatif['Datetime_Exact'].dt.month
-                    df_comparatif['Annee'] = df_comparatif['Datetime_Exact'].dt.year
+                    df_comparatif['Has_Facture'] = df_comparatif['Reel_Conso_Totale_MWh'].notna() & (df_comparatif['Reel_Conso_Totale_MWh'] > 0)
+
+                    # Re-création d'un axe de temps universel (Année 2024 fixe)
+                    df_comparatif['Datetime_Graphique'] = pd.to_datetime('2024-' + df_comparatif['Join_Key'], format='%Y-%m-%d %H:%M', errors='coerce')
+                    df_comparatif['Mois'] = df_comparatif['Datetime_Graphique'].dt.month
+                    df_comparatif['Annee'] = df_comparatif['Datetime_Graphique'].dt.year
                     df_comparatif['Sort_Key'] = df_comparatif['Annee'] * 100 + df_comparatif['Mois']
 
 
-                # --- NETTOYAGE DES ERREURS ---
+                # --- NETTOYAGE ET ERREURS (COMMUN AUX DEUX MODES) ---
                 df_comparatif = df_comparatif[~df_comparatif['Proprietaire'].astype(str).isin(['', '0', 'nan', 'NaN'])]
 
                 alertes = []
@@ -393,8 +378,8 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 fact_jamais_sim = list(m_factures - m_simules)
                 
                 if fact_jamais_sim: alertes.append(("warning", f"**Facturés mais JAMAIS simulés (Ajoutés avec simu=0) :** {', '.join(fact_jamais_sim)}"))
-                if simu_jamais_fact: alertes.append(("warning", f"**Simulés mais SANS facture (Affichés dans les courbes individuelles uniquement) :** {', '.join(simu_jamais_fact)}"))
-                if not alertes: alertes.append(("success", "✅ Bases de données parfaitement alignées !"))
+                if simu_jamais_fact: alertes.append(("warning", f"**Simulés mais SANS facture Sibelga sur cette période (Ignorés dans les totaux réels) :** {', '.join(simu_jamais_fact)}"))
+                if not alertes: alertes.append(("success", "✅ Bases de données parfaitement alignées sur la période !"))
 
                 df_comparatif['Erreur_Conso_MWh'] = df_comparatif['Sim_Conso_Totale_MWh'] - df_comparatif['Reel_Conso_Totale_MWh']
                 df_comparatif['Erreur_Prod_MWh'] = df_comparatif['Sim_Prod_Totale_MWh'] - df_comparatif['Reel_Prod_Totale_MWh']
@@ -415,8 +400,8 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 st.session_state['df_contacts_ref'] = df_contacts[cols_ref].copy()
                 st.session_state['calcul_termine'] = True
 
-                # NETTOYAGE RAM
-                variables_a_purger = ['df_reels_all', 'df_reels_final', 'df_sim_raw', 'df_sim_final', 'df_sim_to_merge', 'df_comparatif', 'df_piv', 'df_s']
+                # NETTOYAGE RAM COMPLET
+                variables_a_purger = ['df_reels_all', 'df_reels_final', 'df_sim_raw', 'df_sim_final', 'df_concat', 'df_reels_concat', 'df_sim_concat', 'df_comparatif', 'df_piv', 'df_s']
                 for var in variables_a_purger:
                     if var in locals(): del locals()[var]
                 gc.collect()
@@ -588,24 +573,25 @@ if st.session_state.get('calcul_termine', False):
         n_mois = len(df_mensuel_agg['Sort_Key'].unique())
         fig_width = max(14, n_mois * 0.9)
 
-        # On garde TOUT le monde (même sans facture) pour comparer la masse globale
         df_trend_base = df_analyse_brut.copy()
         
-        # SÉLECTION EXACTE DE LA COLONNE PRÉ-CALCULÉE (Fini les plantages)
-        if granularite_globale == "Par Heure" and 'Datetime_Heure' in df_trend_base.columns:
-            col_temps = 'Datetime_Heure'
-        elif granularite_globale == "Par Jour" and 'Datetime_Jour' in df_trend_base.columns:
-            col_temps = 'Datetime_Jour'
+        if granularite_globale == "Par Heure" and 'Datetime_Graphique' in df_trend_base.columns:
+            df_trend_base['Axe_Temps'] = df_trend_base['Datetime_Graphique'].dt.floor('h')
+        elif granularite_globale == "Par Jour" and 'Datetime_Graphique' in df_trend_base.columns:
+            df_trend_base['Axe_Temps'] = df_trend_base['Datetime_Graphique'].dt.normalize()
         else:
-            col_temps = 'Datetime_Mois'
+            if 'Datetime_Graphique' in df_trend_base.columns:
+                df_trend_base['Axe_Temps'] = pd.to_datetime(df_trend_base['Datetime_Graphique'].dt.strftime('%Y-%m-01'))
+            else:
+                df_trend_base['Axe_Temps'] = pd.to_datetime(df_trend_base['Annee'].astype(str) + '-' + df_trend_base['Mois'].astype(str) + '-01')
 
-        df_trend = df_trend_base.groupby(col_temps)[[col_r, col_s]].sum().reset_index()
+        df_trend = df_trend_base.groupby('Axe_Temps')[[col_r, col_s]].sum().reset_index()
         
         fig_trend, ax_trend = plt.subplots(figsize=(fig_width, 4))
         use_marker = 'o' if len(df_trend) < 35 else None
         
-        ax_trend.plot(df_trend[col_temps], df_trend[col_r], marker=use_marker, color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
-        ax_trend.plot(df_trend[col_temps], df_trend[col_s], marker='x' if use_marker else None, color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
+        ax_trend.plot(df_trend['Axe_Temps'], df_trend[col_r], marker=use_marker, color='#3498db', linewidth=2.5, label='Réalité (Sibelga)')
+        ax_trend.plot(df_trend['Axe_Temps'], df_trend[col_s], marker='x' if use_marker else None, color='#e74c3c', linestyle='--', linewidth=2.5, label='Simulation (Streamlit)')
         
         ax_trend.set_ylabel(f'MWh / {granularite_globale.split(" ")[1]}')
         ax_trend.legend()
@@ -670,15 +656,17 @@ if st.session_state.get('calcul_termine', False):
             else:
                 granularite_indiv = "Par Mois"
                 
-            # MÊME CORRECTION : On pointe vers les colonnes pré-calculées
-            if granularite_indiv == "Par Heure" and 'Datetime_Heure' in df_indiv.columns:
-                col_temps_indiv = 'Datetime_Heure'
-            elif granularite_indiv == "Par Jour" and 'Datetime_Jour' in df_indiv.columns:
-                col_temps_indiv = 'Datetime_Jour'
+            if granularite_indiv == "Par Heure" and 'Datetime_Graphique' in df_indiv.columns:
+                df_indiv['Axe_Temps'] = df_indiv['Datetime_Graphique'].dt.floor('h')
+            elif granularite_indiv == "Par Jour" and 'Datetime_Graphique' in df_indiv.columns:
+                df_indiv['Axe_Temps'] = df_indiv['Datetime_Graphique'].dt.normalize()
             else:
-                col_temps_indiv = 'Datetime_Mois'
+                if 'Datetime_Graphique' in df_indiv.columns:
+                    df_indiv['Axe_Temps'] = pd.to_datetime(df_indiv['Datetime_Graphique'].dt.strftime('%Y-%m-01'))
+                else:
+                    df_indiv['Axe_Temps'] = pd.to_datetime(df_indiv['Annee'].astype(str) + '-' + df_indiv['Mois'].astype(str) + '-01')
                 
-            df_indiv_plot = df_indiv.groupby(col_temps_indiv)[[
+            df_indiv_plot = df_indiv.groupby('Axe_Temps')[[
                 'Reel_Conso_Totale_MWh', 'Sim_Conso_Totale_MWh', 
                 'Reel_Prod_Totale_MWh', 'Sim_Prod_Totale_MWh', 
                 'Reel_Conso_Partagee_MWh', 'Sim_Conso_Partagee_MWh',
@@ -699,8 +687,8 @@ if st.session_state.get('calcul_termine', False):
             fig_indiv, ax_indiv = plt.subplots(figsize=(fig_width, 4))
             use_marker = 'o' if len(df_indiv_plot) < 35 else None
             
-            ax_indiv.plot(df_indiv_plot[col_temps_indiv], df_indiv_plot[c_r], marker=use_marker, color='#9b59b6', linewidth=2, label='Réalité (Sibelga)')
-            ax_indiv.plot(df_indiv_plot[col_temps_indiv], df_indiv_plot[c_s], marker='x' if use_marker else None, color='#f1c40f', linestyle='--', linewidth=2, label='Simulation (Streamlit)')
+            ax_indiv.plot(df_indiv_plot['Axe_Temps'], df_indiv_plot[c_r], marker=use_marker, color='#9b59b6', linewidth=2, label='Réalité (Sibelga)')
+            ax_indiv.plot(df_indiv_plot['Axe_Temps'], df_indiv_plot[c_s], marker='x' if use_marker else None, color='#f1c40f', linestyle='--', linewidth=2, label='Simulation (Streamlit)')
             ax_indiv.set_ylabel(f'MWh / {granularite_indiv.split(" ")[1]}')
             ax_indiv.legend()
             col_i2.pyplot(fig_indiv, use_container_width=False)
@@ -741,7 +729,7 @@ if st.session_state.get('calcul_termine', False):
     # ==========================================
     st.divider()
     st.subheader("📋 Base de Données Complète")
-    df_affichage = st.session_state['df_analyse'].drop(columns=['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%', 'Sort_Key', 'Periode_Str', 'Has_Facture', 'Erreur_Heatmap', 'Datetime_Heure', 'Datetime_Jour', 'Datetime_Mois', 'Datetime_Exact'], errors='ignore')
+    df_affichage = st.session_state['df_analyse'].drop(columns=['Abs_Erreur_Conso', 'Abs_Erreur_Prod', 'Abs_Erreur_Conso_%', 'Abs_Erreur_Prod_%', 'Sort_Key', 'Periode_Str', 'Has_Facture', 'Erreur_Heatmap', 'Datetime_Graphique', 'Datetime_Heure', 'Datetime_Jour', 'Datetime_Mois', 'Datetime_Exact'], errors='ignore')
     st.dataframe(df_affichage, use_container_width=True)
     
     csv = df_affichage.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
