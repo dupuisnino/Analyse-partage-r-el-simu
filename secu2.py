@@ -81,19 +81,17 @@ def parser_sibelga_15min(fichiers_bytes, noms_fichiers):
 
 @st.cache_data(show_spinner=False)
 def parser_simu_15min(fichier_bytes):
-    # 1. Lecture du gros fichier CSV
+    # 1. OPTIMISATION VITESSE ET LECTURE SÉCURISÉE (Gère les CSV européens)
     try:
-        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=None, engine='python') # Détecte auto la virgule ou le point-virgule
+        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=';', low_memory=False)
+        if len(df_s.columns) < 3: 
+            df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=',', low_memory=False)
     except:
-        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=',')
+        df_s = pd.read_csv(io.BytesIO(fichier_bytes), sep=',', low_memory=False)
         
     df_s.columns = df_s.columns.str.strip()
     
-    # 2. Date
-    col_date = df_s.columns[0]
-    df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
-
-    # 3. Les 9 suffixes exacts de Clément
+    # 2. Les 9 suffixes exacts de Clément
     suffixes = [
         '_residual off-take', 
         '_residual injection', 
@@ -105,16 +103,35 @@ def parser_simu_15min(fichier_bytes):
         '_commodity costs from shared volume',
         '_enr contribution after community'
     ]
+    
+    # 3. DÉTECTION INTELLIGENTE DE LA COLONNE DATE
+    col_date = None
+    for c in df_s.columns:
+        if any(x in str(c).lower() for x in ['date', 'time', 'unnamed', 'index']):
+            col_date = c
+            break
+    
+    # Si aucun mot-clé n'est trouvé, on prend la première colonne qui n'a pas de suffixe d'énergie
+    if col_date is None:
+        for c in df_s.columns:
+            if not any(c.endswith(s) for s in suffixes):
+                col_date = c
+                break
+                
+    if col_date is None:
+        col_date = df_s.columns[0] # Sécurité ultime
 
-    # 4. Identification intelligente des membres (ignore les _ dans les noms)
+    df_s['Datetime'] = pd.to_datetime(df_s[col_date], errors='coerce').dt.tz_localize(None)
+
+    # 4. IDENTIFICATION DES MEMBRES (Ignore les "_" dans les noms d'origine)
     membres_simu = set()
     for col in df_s.columns:
         for suff in suffixes:
             if col.endswith(suff):
-                membres_simu.add(col[:-len(suff)]) # Garde juste le nom avant le suffixe
+                membres_simu.add(col[:-len(suff)].strip()) # On coupe le suffixe et on nettoie les espaces
                 break
 
-    # 5. La "Fonte" (Format Large -> Format Long)
+    # 5. LA "FONTE" (Format Large -> Format Long)
     d_list = []
     for p in membres_simu:
         temp = pd.DataFrame({'Datetime': df_s['Datetime'], 'Nom_Streamlit': p})
@@ -126,16 +143,12 @@ def parser_simu_15min(fichier_bytes):
             return 0.0
             
         # --- VOLUMES ---
-        # ATTENTION UNITÉ : Si Clément t'a bien mis des MWh directs, on divise par 1. 
-        # (Si un jour il remet des Watts, change le 1.0 par 4000.0)
-        diviseur_volume = 1.0 
+        temp['Sim_Conso_Totale_MWh'] = extract_num('_residual off-take')
+        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('_residual injection'))
+        temp['Sim_Conso_Partagee_MWh'] = extract_num('_shared volume from community')
+        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('_shared volume to community'))
         
-        temp['Sim_Conso_Totale_MWh'] = extract_num('_residual off-take') / diviseur_volume
-        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('_residual injection')) / diviseur_volume
-        temp['Sim_Conso_Partagee_MWh'] = extract_num('_shared volume from community') / diviseur_volume
-        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('_shared volume to community')) / diviseur_volume
-        
-        # --- FINANCES (EUROS) ---
+        # --- FINANCES (Prêt pour le prochain rapport PDF) ---
         temp['Sim_Cout_Reseau_Euro'] = extract_num('_commodity costs from grid')
         temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('_selling revenues from grid injection'))
         temp['Sim_Cout_CE_Euro'] = extract_num('_commodity costs from shared volume')
@@ -144,7 +157,7 @@ def parser_simu_15min(fichier_bytes):
 
         d_list.append(temp)
 
-    # 6. Assemblage final ultra-rapide
+    # 6. Assemblage final
     return pd.concat(d_list) if d_list else pd.DataFrame()
 
 # ==========================================
