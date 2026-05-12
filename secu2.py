@@ -120,10 +120,17 @@ def parser_simu_15min(fichier_bytes):
             
         diviseur_vol = 1000.0 # Transformation des kWh en MWh
         
-        temp['Sim_Conso_Totale_MWh'] = extract_num('residual off-take') / diviseur_vol
-        temp['Sim_Prod_Totale_MWh'] = np.abs(extract_num('residual injection')) / diviseur_vol
-        temp['Sim_Conso_Partagee_MWh'] = extract_num('shared volume from community') / diviseur_vol
-        temp['Sim_Prod_Partagee_MWh'] = np.abs(extract_num('shared volume to community')) / diviseur_vol
+        # --- MODIFICATION MÉTIER : Total = Résiduel + Partagé ---
+        sim_conso_residuelle = extract_num('residual off-take') / diviseur_vol
+        sim_conso_partagee = extract_num('shared volume from community') / diviseur_vol
+        
+        sim_prod_residuelle = np.abs(extract_num('residual injection')) / diviseur_vol
+        sim_prod_partagee = np.abs(extract_num('shared volume to community')) / diviseur_vol
+        
+        temp['Sim_Conso_Partagee_MWh'] = sim_conso_partagee
+        temp['Sim_Prod_Partagee_MWh'] = sim_prod_partagee
+        temp['Sim_Conso_Totale_MWh'] = sim_conso_residuelle + sim_conso_partagee
+        temp['Sim_Prod_Totale_MWh'] = sim_prod_residuelle + sim_prod_partagee
         
         # Données Financières pour la génération de rapport (En euros purs, on ne divise pas)
         temp['Sim_Cout_Reseau_Euro'] = extract_num('commodity costs from grid')
