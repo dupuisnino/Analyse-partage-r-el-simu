@@ -450,7 +450,7 @@ if st.session_state.get('calcul_termine', False):
     df_mensuel_agg['Abs_Erreur_Prod_%'] = df_mensuel_agg['Erreur_Prod_%'].abs()
     
     # -----------------------------------------------------
-    # MATHEMATHIQUES FINANCIERES : DEDUCTION DES PRIX REELS
+    # MATHEMATHIQUES FINANCIERES : DEDUCTION DES PRIX REELS ET ENR
     # -----------------------------------------------------
     def safe_div(a, b):
         return np.where(b != 0, a / b, 0.0)
@@ -462,23 +462,38 @@ if st.session_state.get('calcul_termine', False):
     p_achat_ce = safe_div(df_mensuel_agg['Sim_Cout_CE_Euro'], df_mensuel_agg['Sim_Conso_Partagee_MWh'])
     p_vente_res = safe_div(df_mensuel_agg['Sim_Revenu_Reseau_Euro'], sim_prod_res)
     p_vente_ce = safe_div(df_mensuel_agg['Sim_Revenu_CE_Euro'], df_mensuel_agg['Sim_Prod_Partagee_MWh'])
+    
+    # 🔥 NOUVEAU : Prix unitaire de la taxe ENR (Payé uniquement sur ce qui vient du réseau)
+    p_enr = safe_div(df_mensuel_agg['Sim_ENR_Euro'], sim_conso_res)
 
     # --- SIMULATION (Dépenses/Gains théoriques) ---
-    df_mensuel_agg['Sim_Cout_Sans_CE'] = df_mensuel_agg['Sim_Conso_Totale_MWh'] * p_achat_res
-    df_mensuel_agg['Sim_Cout_Avec_CE'] = df_mensuel_agg['Sim_Cout_Reseau_Euro'] + df_mensuel_agg['Sim_Cout_CE_Euro']
+    # Sans CE : On paie tout au tarif réseau (Commodité + ENR)
+    df_mensuel_agg['Sim_Cout_Sans_CE'] = df_mensuel_agg['Sim_Conso_Totale_MWh'] * (p_achat_res + p_enr)
+    # Avec CE : On paie le réseau + la CE + l'ENR (qui a été réduite)
+    df_mensuel_agg['Sim_Cout_Avec_CE'] = df_mensuel_agg['Sim_Cout_Reseau_Euro'] + df_mensuel_agg['Sim_Cout_CE_Euro'] + df_mensuel_agg['Sim_ENR_Euro']
+    
     df_mensuel_agg['Sim_Revenu_Sans_CE'] = df_mensuel_agg['Sim_Prod_Totale_MWh'] * p_vente_res
     df_mensuel_agg['Sim_Revenu_Avec_CE'] = df_mensuel_agg['Sim_Revenu_Reseau_Euro'] + df_mensuel_agg['Sim_Revenu_CE_Euro']
+    
     df_mensuel_agg['Sim_Benefice'] = (df_mensuel_agg['Sim_Cout_Sans_CE'] - df_mensuel_agg['Sim_Cout_Avec_CE']) + (df_mensuel_agg['Sim_Revenu_Avec_CE'] - df_mensuel_agg['Sim_Revenu_Sans_CE'])
 
-    # --- RÉALITÉ (Application des prix aux vrais volumes) ---
+    # --- RÉALITÉ (Application des prix aux vrais volumes Sibelga) ---
     reel_conso_res = np.maximum(0, df_mensuel_agg['Reel_Conso_Totale_MWh'] - df_mensuel_agg['Reel_Conso_Partagee_MWh'])
     reel_prod_res = np.maximum(0, df_mensuel_agg['Reel_Prod_Totale_MWh'] - df_mensuel_agg['Reel_Prod_Partagee_MWh'])
 
-    df_mensuel_agg['Reel_Cout_Sans_CE'] = df_mensuel_agg['Reel_Conso_Totale_MWh'] * p_achat_res
-    df_mensuel_agg['Reel_Cout_Avec_CE'] = (reel_conso_res * p_achat_res) + (df_mensuel_agg['Reel_Conso_Partagee_MWh'] * p_achat_ce)
+    # Sans CE : Vrais volumes totaux * (Prix réseau + Prix ENR)
+    df_mensuel_agg['Reel_Cout_Sans_CE'] = df_mensuel_agg['Reel_Conso_Totale_MWh'] * (p_achat_res + p_enr)
+    # Avec CE : Vrai résiduel * Prix réseau + Vrai partagé * Prix CE + Vrai résiduel * Prix ENR
+    df_mensuel_agg['Reel_Cout_Avec_CE'] = (reel_conso_res * p_achat_res) + (df_mensuel_agg['Reel_Conso_Partagee_MWh'] * p_achat_ce) + (reel_conso_res * p_enr)
+    
     df_mensuel_agg['Reel_Revenu_Sans_CE'] = df_mensuel_agg['Reel_Prod_Totale_MWh'] * p_vente_res
     df_mensuel_agg['Reel_Revenu_Avec_CE'] = (reel_prod_res * p_vente_res) + (df_mensuel_agg['Reel_Prod_Partagee_MWh'] * p_vente_ce)
+    
     df_mensuel_agg['Reel_Benefice'] = (df_mensuel_agg['Reel_Cout_Sans_CE'] - df_mensuel_agg['Reel_Cout_Avec_CE']) + (df_mensuel_agg['Reel_Revenu_Avec_CE'] - df_mensuel_agg['Reel_Revenu_Sans_CE'])
+    
+    # 🔥 BONUS POUR LE RAPPORT WORD : On isole l'économie purement due à l'exemption ENR
+    df_mensuel_agg['Sim_Economie_ENR_Seule'] = df_mensuel_agg['Sim_Conso_Partagee_MWh'] * p_enr
+    df_mensuel_agg['Reel_Economie_ENR_Seule'] = df_mensuel_agg['Reel_Conso_Partagee_MWh'] * p_enr
     # -----------------------------------------------------
 
     st.subheader("🚨 Alertes d'Audit")
