@@ -116,6 +116,7 @@ def parser_simu_15min(fichier_bytes):
         temp['Sim_Revenu_Reseau_Euro'] = np.abs(extract_num('selling revenues from grid injection'))
         temp['Sim_Cout_CE_Euro'] = extract_num('commodity costs from shared volume')
         temp['Sim_Revenu_CE_Euro'] = np.abs(extract_num('selling revenues from shared volume'))
+        temp['Sim_ENR_Euro'] = extract_num('enr contribution after community') # <-- Intégré
 
         d_list.append(temp)
 
@@ -289,12 +290,13 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                                 'Sim_Cout_Reseau_Euro': s_simu.get(f"{p}_commodity costs from grid", 0),
                                 'Sim_Revenu_Reseau_Euro': abs(s_simu.get(f"{p}_selling revenues from grid injection", 0)),
                                 'Sim_Cout_CE_Euro': s_simu.get(f"{p}_commodity costs from shared volume", 0),
-                                'Sim_Revenu_CE_Euro': abs(s_simu.get(f"{p}_selling revenues from shared volume", 0))
+                                'Sim_Revenu_CE_Euro': abs(s_simu.get(f"{p}_selling revenues from shared volume", 0)),
+                                'Sim_ENR_Euro': s_simu.get(f"{p}_enr contribution after community", 0)
                             })
                     df_sim_agg = pd.DataFrame(d_simu)
                     df_sim_agg['Proprietaire'] = df_sim_agg['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_agg['Nom_Streamlit'])
                     
-                    cols_to_sum = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Sim_Cout_Reseau_Euro', 'Sim_Revenu_Reseau_Euro', 'Sim_Cout_CE_Euro', 'Sim_Revenu_CE_Euro']
+                    cols_to_sum = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Sim_Cout_Reseau_Euro', 'Sim_Revenu_Reseau_Euro', 'Sim_Cout_CE_Euro', 'Sim_Revenu_CE_Euro', 'Sim_ENR_Euro']
                     df_sim_final = df_sim_agg.groupby(['Proprietaire', 'Mois'])[cols_to_sum].sum().reset_index()
 
                     all_props = list(set(df_reels_final['Proprietaire']).union(set(df_sim_final['Proprietaire'])))
@@ -340,7 +342,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                     
                     df_sim_raw['Proprietaire'] = df_sim_raw['Nom_Streamlit'].map(mapping_sim).fillna(df_sim_raw['Nom_Streamlit'])
                     
-                    cols_to_sum = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Sim_Cout_Reseau_Euro', 'Sim_Revenu_Reseau_Euro', 'Sim_Cout_CE_Euro', 'Sim_Revenu_CE_Euro']
+                    cols_to_sum = ['Sim_Conso_Partagee_MWh', 'Sim_Conso_Totale_MWh', 'Sim_Prod_Partagee_MWh', 'Sim_Prod_Totale_MWh', 'Sim_Cout_Reseau_Euro', 'Sim_Revenu_Reseau_Euro', 'Sim_Cout_CE_Euro', 'Sim_Revenu_CE_Euro', 'Sim_ENR_Euro']
                     df_sim_final = df_sim_raw.groupby(['Proprietaire', 'Datetime'])[cols_to_sum].sum().reset_index()
 
                     df_reels_final['Join_Key'] = df_reels_final['Datetime'].dt.strftime('%m-%d %H:%M')
@@ -400,7 +402,7 @@ if fichier_contacts and fichiers_sibelga and fichier_mapping and fichier_simu:
                 st.session_state['df_contacts_ref'] = df_contacts[cols_ref].copy()
                 st.session_state['calcul_termine'] = True
 
-                # VIDAGE RAM POUR EVITER LES CRASHS (Détruit les objets intermédiaires)
+                # VIDAGE RAM POUR EVITER LES CRASHS
                 variables_a_purger = ['df_reels_all', 'df_reels_final', 'df_sim_raw', 'df_sim_final', 'df_sim_to_merge', 'df_piv', 'df_s']
                 for var in variables_a_purger:
                     if var in locals(): del locals()[var]
@@ -417,7 +419,7 @@ if st.session_state.get('calcul_termine', False):
     df_analyse_brut = st.session_state['df_analyse']
     
     # -----------------------------------------------------
-    # AGRÉGATION MENSUELLE ET CALCULS FINANCIERS POUR LES VUES GLOBALES
+    # AGRÉGATION MENSUELLE ET CALCULS FINANCIERS
     # -----------------------------------------------------
     df_mensuel_agg = df_analyse_brut.groupby(['Proprietaire', 'Mois', 'Annee', 'Sort_Key', 'Periode_Str']).agg({
         'Reel_Conso_Partagee_MWh': 'sum',
@@ -432,10 +434,10 @@ if st.session_state.get('calcul_termine', False):
         'Sim_Revenu_Reseau_Euro': 'sum',
         'Sim_Cout_CE_Euro': 'sum',
         'Sim_Revenu_CE_Euro': 'sum',
+        'Sim_ENR_Euro': 'sum',
         'Has_Facture': 'max'
     }).reset_index()
 
-    # Calcul des erreurs de volumes
     df_mensuel_agg['Erreur_Conso_MWh'] = df_mensuel_agg['Sim_Conso_Totale_MWh'] - df_mensuel_agg['Reel_Conso_Totale_MWh']
     df_mensuel_agg['Erreur_Prod_MWh'] = df_mensuel_agg['Sim_Prod_Totale_MWh'] - df_mensuel_agg['Reel_Prod_Totale_MWh']
     df_mensuel_agg['Erreur_Partage_MWh'] = df_mensuel_agg['Sim_Conso_Partagee_MWh'] - df_mensuel_agg['Reel_Conso_Partagee_MWh']
@@ -463,35 +465,23 @@ if st.session_state.get('calcul_termine', False):
     p_vente_res = safe_div(df_mensuel_agg['Sim_Revenu_Reseau_Euro'], sim_prod_res)
     p_vente_ce = safe_div(df_mensuel_agg['Sim_Revenu_CE_Euro'], df_mensuel_agg['Sim_Prod_Partagee_MWh'])
     
-    # 🔥 NOUVEAU : Prix unitaire de la taxe ENR (Payé uniquement sur ce qui vient du réseau)
     p_enr = safe_div(df_mensuel_agg['Sim_ENR_Euro'], sim_conso_res)
 
-    # --- SIMULATION (Dépenses/Gains théoriques) ---
-    # Sans CE : On paie tout au tarif réseau (Commodité + ENR)
     df_mensuel_agg['Sim_Cout_Sans_CE'] = df_mensuel_agg['Sim_Conso_Totale_MWh'] * (p_achat_res + p_enr)
-    # Avec CE : On paie le réseau + la CE + l'ENR (qui a été réduite)
     df_mensuel_agg['Sim_Cout_Avec_CE'] = df_mensuel_agg['Sim_Cout_Reseau_Euro'] + df_mensuel_agg['Sim_Cout_CE_Euro'] + df_mensuel_agg['Sim_ENR_Euro']
-    
     df_mensuel_agg['Sim_Revenu_Sans_CE'] = df_mensuel_agg['Sim_Prod_Totale_MWh'] * p_vente_res
     df_mensuel_agg['Sim_Revenu_Avec_CE'] = df_mensuel_agg['Sim_Revenu_Reseau_Euro'] + df_mensuel_agg['Sim_Revenu_CE_Euro']
-    
     df_mensuel_agg['Sim_Benefice'] = (df_mensuel_agg['Sim_Cout_Sans_CE'] - df_mensuel_agg['Sim_Cout_Avec_CE']) + (df_mensuel_agg['Sim_Revenu_Avec_CE'] - df_mensuel_agg['Sim_Revenu_Sans_CE'])
 
-    # --- RÉALITÉ (Application des prix aux vrais volumes Sibelga) ---
     reel_conso_res = np.maximum(0, df_mensuel_agg['Reel_Conso_Totale_MWh'] - df_mensuel_agg['Reel_Conso_Partagee_MWh'])
     reel_prod_res = np.maximum(0, df_mensuel_agg['Reel_Prod_Totale_MWh'] - df_mensuel_agg['Reel_Prod_Partagee_MWh'])
 
-    # Sans CE : Vrais volumes totaux * (Prix réseau + Prix ENR)
     df_mensuel_agg['Reel_Cout_Sans_CE'] = df_mensuel_agg['Reel_Conso_Totale_MWh'] * (p_achat_res + p_enr)
-    # Avec CE : Vrai résiduel * Prix réseau + Vrai partagé * Prix CE + Vrai résiduel * Prix ENR
     df_mensuel_agg['Reel_Cout_Avec_CE'] = (reel_conso_res * p_achat_res) + (df_mensuel_agg['Reel_Conso_Partagee_MWh'] * p_achat_ce) + (reel_conso_res * p_enr)
-    
     df_mensuel_agg['Reel_Revenu_Sans_CE'] = df_mensuel_agg['Reel_Prod_Totale_MWh'] * p_vente_res
     df_mensuel_agg['Reel_Revenu_Avec_CE'] = (reel_prod_res * p_vente_res) + (df_mensuel_agg['Reel_Prod_Partagee_MWh'] * p_vente_ce)
-    
     df_mensuel_agg['Reel_Benefice'] = (df_mensuel_agg['Reel_Cout_Sans_CE'] - df_mensuel_agg['Reel_Cout_Avec_CE']) + (df_mensuel_agg['Reel_Revenu_Avec_CE'] - df_mensuel_agg['Reel_Revenu_Sans_CE'])
     
-    # 🔥 BONUS POUR LE RAPPORT WORD : On isole l'économie purement due à l'exemption ENR
     df_mensuel_agg['Sim_Economie_ENR_Seule'] = df_mensuel_agg['Sim_Conso_Partagee_MWh'] * p_enr
     df_mensuel_agg['Reel_Economie_ENR_Seule'] = df_mensuel_agg['Reel_Conso_Partagee_MWh'] * p_enr
     # -----------------------------------------------------
@@ -519,7 +509,6 @@ if st.session_state.get('calcul_termine', False):
         st.divider()
         st.subheader(f"🌍 Analyse Globale ({mois_cible_str})")
         
-        # AJOUT DE LA 4EME COLONNE FINANCE DANS LES KPIS DU MOIS
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         
         tot_r_conso = df_mensuel['Reel_Conso_Totale_MWh'].sum()
@@ -603,7 +592,6 @@ if st.session_state.get('calcul_termine', False):
         
         df_apples = df_mensuel_agg[df_mensuel_agg['Has_Facture'] > 0]
         
-        # AJOUT DE LA COLONNE FINANCE (BÉNÉFICE CUMULÉ GLOBAL)
         col_a1, col_a2, col_a3, col_a4 = st.columns(4)
         t_rc = df_apples['Reel_Conso_Totale_MWh'].sum()
         t_sc = df_apples['Sim_Conso_Totale_MWh'].sum()
@@ -644,7 +632,6 @@ if st.session_state.get('calcul_termine', False):
         n_mois = len(df_mensuel_agg['Sort_Key'].unique())
         fig_width = max(14, n_mois * 0.9)
 
-        # Création de l'axe temporel dynamique
         df_trend_base = df_analyse_brut[df_analyse_brut['Has_Facture'] == True].copy()
         
         if granularite_globale == "Par Heure" and 'Datetime' in df_trend_base.columns:
@@ -715,7 +702,7 @@ if st.session_state.get('calcul_termine', False):
             
             if has_conso: options_indiv.extend(["⚡ Conso Totale", "🤝 Conso Partagée"])
             if has_prod: options_indiv.extend(["☀️ Prod Totale", "🤝 Prod Partagée"])
-            options_indiv.append("💰 Finances (Gains & Dépenses)") # <-- L'OPTION FINANCE
+            options_indiv.append("💰 Finances (Gains & Dépenses)")
 
             if not options_indiv: options_indiv = ["⚡ Conso Totale"]
                 
@@ -731,7 +718,6 @@ if st.session_state.get('calcul_termine', False):
             # SI MODE VOLUMES (GRAPHIQUES)
             # ============================
             if choix_kpi_indiv != "💰 Finances (Gains & Dépenses)":
-                # Création de l'axe temporel individuel
                 if granularite_indiv == "Par Heure" and 'Datetime' in df_indiv.columns:
                     df_indiv['Axe_Temps'] = df_indiv['Datetime'].dt.floor('h')
                 elif granularite_indiv == "Par Jour" and 'Datetime' in df_indiv.columns:
@@ -801,7 +787,6 @@ if st.session_state.get('calcul_termine', False):
                 })
                 st.table(finance_data)
                 
-                # [PLACEHOLDER EXPORT RAPPORT]
                 st.info("📥 L'export du rapport PDF/Word viendra s'insérer ici.")
 
         else:
